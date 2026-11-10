@@ -220,7 +220,7 @@ if (WIN32)
     set_target_properties(atrac9 PROPERTIES C_STANDARD 99 INTERPROCEDURAL_OPTIMIZATION OFF)
     add_executable(gow3-probe ../src/probe.c ${GOW3_RUNTIME} ../src/compat_win.c ../src/cpu_check.c ../src/vulkan_smoke.c
         ../src/isa_rewrite.c ../src/isa_emulate.c ../src/redzone.cpp
-        ../src/bootstrap.c ../src/boot_pkg.c ../src/boot_prepare.c ../src/boot_util.c ../src/boot_crypto.c
+        ../src/bootstrap.c ../src/dynlib.c ../src/boot_pkg.c ../src/boot_prepare.c ../src/boot_util.c ../src/boot_crypto.c
         ../packaging/windows/gow3-probe.rc)
     # redzone.cpp: Zydis decodes the game's functions, xbyak writes the trampolines.
     set_source_files_properties(../src/redzone.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20")
