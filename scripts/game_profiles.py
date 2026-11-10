@@ -1,6 +1,8 @@
 """Per-game settings, by title id in sce_sys/param.sfo (after bc160201983's MediEvil port).
 
-modules: bundled sce_module PRX files linked into the image (link_modules.py), in order.
+modules: PRX files linked into the image (link_modules.py), in order. A plain name is a bundled
+    system module in sce_module; a name with a '/' is relative to the game folder (Unity's
+    Media/Modules).
 env: default environment for the run (run.py); a value already set wins.
 reserve: zeroed bytes after the modules (link_modules.py) for patches that move a full table there.
 """
@@ -48,6 +50,12 @@ PROFILES = {
     # RESOGUN 01.10 (Housemarque, Sasquatch engine). The dump ships only libc and Fios2 in
     # sce_module. Settings (frame pacing, red zones, resolution patches) still to be measured.
     'CUSA00038': {'name': 'RESOGUN', 'modules': ('libc.prx', 'libSceFios2.prx')},
+    # Chocobo's Mystery Dungeon EVERY BUDDY! 01.00 (Unity 2018.2.14f1, IL2CPP). The eboot needs
+    # PS4Util and Il2CppUserAssemblies (the game's C# compiled to native code) at load time; the
+    # plugins in Media/Plugins (CRIWARE, SaveData, NpToolkit, RSPlugin) are loaded later by Unity.
+    'CUSA14219': {'name': "Chocobo's Mystery Dungeon EVERY BUDDY!",
+                  'modules': ('libc.prx', 'libSceFios2.prx', 'Media/Modules/PS4Util.prx',
+                              'Media/Modules/Il2CppUserAssemblies.prx')},
 }
 DEFAULT = {'name': None, 'modules': ('libc.prx', 'libSceFios2.prx')}
 
@@ -65,5 +73,6 @@ def profile(game):
     """The profile of a game folder (DEFAULT for unknown games)."""
     found = PROFILES.get(title_id(game) or '', DEFAULT)
     # Only modules the dump actually ships are linked.
-    modules = tuple(m for m in found['modules'] if (Path(game) / 'sce_module' / m).is_file())
+    modules = tuple(m for m in found['modules']
+                    if (Path(game) / (m if '/' in m else 'sce_module/' + m)).is_file())
     return {**found, 'modules': modules}

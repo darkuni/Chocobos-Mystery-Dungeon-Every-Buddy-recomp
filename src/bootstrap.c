@@ -1,9 +1,9 @@
 /* See bootstrap.h. Layout next to the program (the folder it is started from):
- *   RESOGUN ... Game.pkg, RESOGUN ... Update.pkg   your fake PKGs (or a ready game folder)
+ *   UP0082-CUSA14219_00-....pkg   your fake PKG (or a ready game folder)
  *   game/        the unpacked game (made on the first start; the PKGs can be deleted after)
  *   out/         the prepared executable (made on the first start, again after a game change)
  *   user/        saves, shader caches, last_run.log
- *   resogun.ini  settings (in-game menu: Insert, or R3+L2 on a controller) */
+ *   chocobo.ini  settings (in-game menu: Insert, or R3+L2 on a controller) */
 #define _FILE_OFFSET_BITS 64
 #ifndef _WIN32
 #define _GNU_SOURCE
@@ -27,10 +27,12 @@
 #include <unistd.h>
 #endif
 
-#define TITLE "RESOGUN"
+#define TITLE "Chocobo's Mystery Dungeon EVERY BUDDY!"
 /* Bump when the prepared files change format: the next start prepares again. */
-#define PREPARE_VERSION "resogun-prepare-1"
-static const char *const MODULES[] = {"libc.prx", "libSceFios2.prx", NULL};
+#define PREPARE_VERSION "chocobo-prepare-1"
+/* Unity: the eboot needs PS4Util and the IL2CPP game code (Media/Modules) at load time. */
+static const char *const MODULES[] = {"libc.prx", "libSceFios2.prx", "Media/Modules/PS4Util.prx",
+                                     "Media/Modules/Il2CppUserAssemblies.prx", NULL};
 
 static char exe_path[4096], base_dir[4096], game_dir[4096], out_dir[4096], user_dir[4096];
 
@@ -141,8 +143,7 @@ static int scan_one(void *ctx, const char *name) {
         return 0;
     }
     /* PKGs of other games in the same folder are left alone. */
-    if (!strstr(f->info.title, "RESOGUN") && !strstr(f->info.title, "Resogun") && strcmp(f->info.title_id, "CUSA00038") &&
-        strcmp(f->info.title_id, "CUSA00039")) {
+    if (strcmp(f->info.title_id, "CUSA14219")) {
         printf("PKG %s skipped: another game (%s, %s)\n", name, f->info.title_id, f->info.title);
         return 0;
     }
@@ -208,7 +209,7 @@ static void progress_cb(void *ctx, uint64_t done, uint64_t total) {
 static int import_pkgs(PkgScan *s) {
     qsort(s->list, (size_t)s->count, sizeof(FoundPkg), pkg_order);
     if (strcmp(s->list[0].info.category, "gd")) {
-        message("Only an update PKG was found next to the program.\n\nPut the RESOGUN game PKG (the base game) in the same folder too.");
+        message("Only an update PKG was found next to the program.\n\nPut the game PKG (the base game) in the same folder too.");
         return 1;
     }
     for (int i = 1; i < s->count; ++i)
@@ -222,7 +223,7 @@ static int import_pkgs(PkgScan *s) {
     /* Software: no GPU driver is loaded before the loader sets up the game's memory. */
     if (p.window) p.renderer = SDL_CreateRenderer(p.window, "software");
     char stamp_path[4096], err[512];
-    if (!boot_path(stamp_path, sizeof(stamp_path), "%s/.resogun-import", game_dir)) return 1;
+    if (!boot_path(stamp_path, sizeof(stamp_path), "%s/.chocobo-import", game_dir)) return 1;
     boot_remove(stamp_path);
     int r = 0;
     for (int i = 0; i < s->count && !r; ++i) {
@@ -260,12 +261,12 @@ static int find_game(void) {
     boot_list_dir(base_dir, scan_one, &s);
     char eboot[4096], stamp_path[4096];
     boot_path(eboot, sizeof(eboot), "%s/eboot.bin", game_dir);
-    boot_path(stamp_path, sizeof(stamp_path), "%s/.resogun-import", game_dir);
+    boot_path(stamp_path, sizeof(stamp_path), "%s/.chocobo-import", game_dir);
     int have_game = boot_is_file(eboot);
     if (!s.count) {
         if (have_game) return 0;
-        message("RESOGUN's game files were not found.\n\n"
-                "Put your RESOGUN PKGs (the game, and the 1.10 update if you have it) in the same folder as this program:\n%s\n\n"
+        message("The game files were not found.\n\n"
+                "Put your Chocobo's Mystery Dungeon EVERY BUDDY! PKG (CUSA14219) in the same folder as this program:\n%s\n\n"
                 "Or a game folder named \"game\" (with eboot.bin in it).",
                 base_dir);
         return 1;
@@ -430,7 +431,7 @@ static int log_windows_report(void) {
                 }
             }
             /* Only reports about this program. */
-            if (!wcsstr(xml, L"resogun")) { close(events[i]); continue; }
+            if (!wcsstr(xml, L"chocobo")) { close(events[i]); continue; }
             EVT_HANDLE meta = name[0] ? publisher(NULL, name, NULL, 0, 0) : NULL;
             DWORD n = 0;
             if (meta && format(meta, events[i], 0, 0, NULL, 1 /* EvtFormatMessageEvent */, 16384, text, &n)) {
@@ -472,7 +473,7 @@ static void watch_game(int argc, char **argv) {
     /* The game opens last_run.log itself (RESOGUN_LOG, bootstrap_game_log). */
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
         fprintf(stderr, "Starting the game failed (error %lu)\n", GetLastError());
-        message("RESOGUN could not start the game (error %lu).", GetLastError());
+        message(TITLE " could not start the game (error %lu).", GetLastError());
         ExitProcess(1);
     }
     if (job) AssignProcessToJobObject(job, pi.hProcess);
@@ -496,9 +497,9 @@ static void watch_game(int argc, char **argv) {
         fflush(NULL);
         wchar_t log[4200];
         char where[4300];
-        snprintf(where, sizeof(where), "RESOGUN stopped unexpectedly.\n\nThe details are in\n%s\\last_run.log", user_dir);
+        snprintf(where, sizeof(where), TITLE " stopped unexpectedly.\n\nThe details are in\n%s\\last_run.log", user_dir);
         MultiByteToWideChar(CP_UTF8, 0, where, -1, log, 4200);
-        MessageBoxW(NULL, log, L"RESOGUN", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, log, L"Chocobo's Mystery Dungeon EVERY BUDDY!", MB_OK | MB_ICONERROR);
     }
     ExitProcess(code);
 }
@@ -546,7 +547,7 @@ int bootstrap(int *argc, char ***argv) {
     fflush(stdout);
 
     char path[4200];
-    in_base(path, sizeof(path), "resogun.ini");
+    in_base(path, sizeof(path), "chocobo.ini");
     set_env("GOW3_CONFIG", path, 0);
     set_env("GOW3_GPU_USER_DIR", user_dir, 0);
     /* As run.py for a game without a frame rate patch: the engine steps 1/60 s per frame. */
@@ -559,7 +560,7 @@ int bootstrap(int *argc, char ***argv) {
      * with none open, flicker, NVIDIA driver faults). GOW3_DRAW_PIPE=1 turns it back on. */
     set_env("GOW3_DRAW_PIPE", "0", 0);
 #ifndef _WIN32
-    set_env("SDL_APP_ID", "resogun", 0);
+    set_env("SDL_APP_ID", "chocobo", 0);
 #endif
     /* The in-game menu's "Apply and restart" starts the program again. */
     char restart[4400];
@@ -596,8 +597,8 @@ int bootstrap(int *argc, char ***argv) {
 
 void bootstrap_cpu_message(const char *missing, int fatal) {
     if (fatal)
-        message("This processor lacks instruction sets RESOGUN's code uses: %s\n\n"
+        message("This processor lacks instruction sets the game's code uses: %s\n\n"
                 "An Intel Sandy Bridge (2011) or newer, or an AMD FX or newer processor, is needed.", missing);
     else
-        message("This processor lacks %s, which RESOGUN's code uses.", missing);
+        message("This processor lacks %s, which the game's code uses.", missing);
 }

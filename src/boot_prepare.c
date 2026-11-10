@@ -490,6 +490,13 @@ static int imported(LinkState *l, Probe *p, const Sym *s, uint64_t *index) {
     return 0;
 }
 
+/* A module name with a '/' is relative to the game folder (Unity's PRXs in Media/Modules); a plain
+ * name is a bundled system module in sce_module. Same rule as link_modules.py module_path. */
+static int module_path(char *path, size_t size, const char *game, const char *name) {
+    return strchr(name, '/') ? boot_path(path, size, "%s/%s", game, name)
+                             : boot_path(path, size, "%s/sce_module/%s", game, name);
+}
+
 static int link_modules(const Module *main, const char *game, const char *const *modules, Probe *p, const char *out_dir,
                         Table *table, size_t *ntable, uint64_t *bases) {
     LinkState l = {0};
@@ -512,7 +519,7 @@ static int link_modules(const Module *main, const char *game, const char *const 
         if (nmods == 16) { r = fail("too many modules"); break; }
         Module *m = &mods[nmods++];
         char path[4096];
-        if (!boot_path(path, sizeof(path), "%s/sce_module/%s", game, modules[k])) { r = fail("path too long"); break; }
+        if (!module_path(path, sizeof(path), game, modules[k])) { r = fail("path too long"); break; }
         if ((r = load_module(path, modules[k], m, NULL, NULL))) break;
         const Ph *loads[256];
         size_t nloads = 0;
@@ -705,7 +712,7 @@ static int write_function_starts(const Self *main, const char *game, const char 
     for (size_t k = 0; !r && k < nbases; ++k) {
         char path[4096];
         Module m;
-        if (!boot_path(path, sizeof(path), "%s/sce_module/%s", game, modules[k])) { r = fail("path too long"); break; }
+        if (!module_path(path, sizeof(path), game, modules[k])) { r = fail("path too long"); break; }
         size_t size;
         uint8_t *data = boot_read_file(path, &size);
         if (!data) { r = fail("cannot read %s", path); break; }

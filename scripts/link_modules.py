@@ -94,6 +94,12 @@ def patch_fs_loads(image, ph, base):
     return patched
 
 
+def module_path(game, filename):
+    """A module name with a '/' is relative to the game folder (Unity's Media/Modules/*.prx);
+    a plain name is a bundled system module in sce_module."""
+    return game / filename if '/' in filename else game / 'sce_module' / filename
+
+
 def link(game, out, module_names=DEFAULT_MODULES, reserve=0):
     """reserve: zeroed read-write bytes after the modules for patches that move a full game table
     there (patches.py <Table>); its offset goes to link.json."""
@@ -130,7 +136,7 @@ def link(game, out, module_names=DEFAULT_MODULES, reserve=0):
     fs_patched = patch_fs_loads(image, main['ph'], 0)
     tls_module = 2
     for filename in module_names:
-        m = module(game / 'sce_module' / filename)
+        m = module(module_path(game, filename))
         loads = [p for p in m['ph'] if p['type'] in (1, 0x61000010)]
         modsize = max(p['vaddr'] + p['memsz'] for p in loads)
         if base + modsize > 512 * 1024 * 1024:
