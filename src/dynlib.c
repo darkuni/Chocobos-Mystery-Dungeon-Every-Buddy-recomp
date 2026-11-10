@@ -26,6 +26,9 @@ typedef struct { char nid[12]; uint64_t value; } Export;
 typedef struct {
     char file[256];          /* as linked: "libc.prx", "Media/Plugins/cri_ware_unity.prx" */
     uintptr_t base;          /* host address of the module's image */
+    uintptr_t init;          /* host address of its module_start */
+    int deferred, started;
+    int32_t start_result;
     Export *exports; size_t nexports, cap;
     int exports_loaded;
 } Dynmod;
@@ -97,7 +100,8 @@ void dynlib_nid(const char *name, char out[12]) {
 }
 
 /* ---- module table ---- */
-int dynlib_init(const char *boot_path, const char *app0, unsigned char *image, const uint64_t *bases, size_t count) {
+int dynlib_init(const char *boot_path, const char *app0, unsigned char *image, const uint64_t *bases,
+                const uint64_t *inits, size_t count) {
     char path[4200];
     const char *slash = strrchr(boot_path, '/');
 #ifdef _WIN32
@@ -117,6 +121,8 @@ int dynlib_init(const char *boot_path, const char *app0, unsigned char *image, c
         Dynmod *m = &mods[nmods];
         memcpy(m->file, line, strlen(line) + 1);
         m->base = (uintptr_t)image + bases[nmods];
+        m->init = (uintptr_t)image + inits[nmods];
+        m->deferred = !strncmp(m->file, "Media/Plugins/", 14);
         ++nmods;
     }
     fclose(f);
@@ -146,11 +152,29 @@ static int find_module(const char *path) {
     return -1;
 }
 
-int32_t dynlib_load(const char *path) {
+int dynlib_deferred(size_t index) { return index < nmods && mods[index].deferred; }
+
+typedef int32_t (ABI *ModuleStart)(uint64_t argc, const void *argv, void *reserved);
+int32_t dynlib_load(const char *path, uint64_t argc, const void *argv, int32_t *result) {
+    if (result) *result = 0;
     if (!path) return -1;
     int i = find_module(path);
     if (i < 0) { printf("Dynlib: sceKernelLoadStartModule(%s): not linked\n", path); return -1; }
-    printf("Dynlib: sceKernelLoadStartModule(%s) -> %s (already started)\n", path, mods[i].file);
+    Dynmod *m = &mods[i];
+    /* Unity opens each plugin from one thread at start-up; the lock still keeps a second caller
+     * from starting it twice. module_start may call back into the loader, so it runs unlocked. */
+    pthread_mutex_lock(&lock);
+    int start = m->deferred && !m->started;
+    if (start) m->started = 1;
+    pthread_mutex_unlock(&lock);
+    if (start) {
+        printf("Dynlib: starting %s (argc %llu)\n", m->file, (unsigned long long)argc);
+        fflush(stdout);
+        m->start_result = ((ModuleStart)m->init)(argc, argv, NULL);
+        printf("Dynlib: %s module_start returned %d\n", m->file, m->start_result);
+    } else
+        printf("Dynlib: sceKernelLoadStartModule(%s) -> %s%s\n", path, m->file, m->deferred ? "" : " (started at boot)");
+    if (result) *result = m->deferred ? m->start_result : 0;
     return HANDLE_BASE + i;
 }
 

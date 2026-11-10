@@ -115,5 +115,8 @@ All 922 imports left to the host runtime have an answer (static check). New in t
 
 - `sceKernelRaiseException` is not delivered. If IL2CPP's GC uses it to stop threads, the
   first collection will hang; the log line "sceKernelRaiseException ... not delivered" shows it.
-- Plugin module_start runs before the game's entry, not when Unity opens the plugin.
+- Plugins (Media/Plugins) start when Unity opens them, with its arguments: SaveData.prx's
+  module_start reads a struct (size 0x10, version 0x200, pointer) from argv and faulted on the
+  NULL it got when every module was started at boot (second test, 2026-11-10). libc, Fios2,
+  NpToolkit2, PS4Util, the IL2CPP code and CRIWARE... started fine before it.
 - The CRIWARE audio path (Ajm / AudioOut / Audio3d) is the runtime's existing one.

@@ -486,13 +486,13 @@ static ABI int32_t voiceqos_read(int32_t connection, void *data, uint32_t *size)
 /* ---- Dynamic modules: everything the game needs is linked up front ----
  * Modules the game opens itself (Unity's Media/Plugins) are linked too; dynlib.c, set up by the
  * probe, maps their names to handles and their exports by name. Without it nothing loads. */
-int32_t (*runtime_dynlib_load_hook)(const char *path);
+int32_t (*runtime_dynlib_load_hook)(const char *path, uint64_t argc, const void *argv, int32_t *result);
 uintptr_t (*runtime_dynlib_sym_hook)(int32_t handle, const char *name);
 static ABI int32_t load_start_module(const char *path, uint64_t argc, const void *argv, uint32_t flags,
                                      const void *option, int32_t *result) {
-    (void)argc; (void)argv; (void)flags; (void)option;
-    int32_t handle=runtime_dynlib_load_hook && path ? runtime_dynlib_load_hook(path) : -1;
+    (void)flags; (void)option;
     if (result) *result=0;
+    int32_t handle=runtime_dynlib_load_hook && path ? runtime_dynlib_load_hook(path,argc,argv,result) : -1;
     if (handle>=0) return handle;
     printf("Runtime: sceKernelLoadStartModule(%s) -> not available\n",path ? path : "(null)");
     return ERR(2); /* ENOENT */

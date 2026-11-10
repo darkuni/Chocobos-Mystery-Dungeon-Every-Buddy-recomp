@@ -134,5 +134,5 @@ unsigned char *runtime_image_base(void);
 #endif
 
 /* Set by the probe (dynlib.c): sceKernelLoadStartModule / sceKernelDlsym for linked modules. */
-extern int32_t (*runtime_dynlib_load_hook)(const char *path);
+extern int32_t (*runtime_dynlib_load_hook)(const char *path, uint64_t argc, const void *argv, int32_t *result);
 extern uintptr_t (*runtime_dynlib_sym_hook)(int32_t handle, const char *name);

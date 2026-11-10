@@ -1614,15 +1614,20 @@ int main(int argc, char **argv) {
         /* Modules the game opens itself (Unity plugins) are linked too: sceKernelLoadStartModule
          * and sceKernelDlsym find them through modules.txt beside the boot file (dynlib.c). */
         {
-            uint64_t bases[16];
-            for (uint64_t m=0;m<module_count && m<16;++m) bases[m]=modules[m].base;
-            if (!dynlib_init(argv[1],app0,image,bases,(size_t)module_count)) {
+            uint64_t bases[16],inits[16];
+            for (uint64_t m=0;m<module_count && m<16;++m) { bases[m]=modules[m].base; inits[m]=modules[m].init; }
+            if (!dynlib_init(argv[1],app0,image,bases,inits,(size_t)module_count)) {
                 runtime_dynlib_load_hook=dynlib_load;
                 runtime_dynlib_sym_hook=dynlib_sym;
             }
         }
         /* Dependencies start in link order (libc first), as the PS4 dynamic linker does. */
         for (uint64_t m=0;m<module_count;++m) {
+            /* Unity's plugins start when the game opens them, with its arguments (dynlib.c). */
+            if (runtime_dynlib_load_hook && dynlib_deferred((size_t)m)) {
+                printf("Linked module %" PRIu64 " waits for sceKernelLoadStartModule\n",m);
+                continue;
+            }
             printf("Starting linked module %" PRIu64 " at image offset 0x%" PRIx64 "; native bindings=%" PRIu64 "\n",m,modules[m].init,nb);
             typedef int (ABI *ModuleInit)(uint64_t,void *,void *);
             int result=((ModuleInit)(image+modules[m].init))(0,NULL,NULL);
