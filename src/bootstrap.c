@@ -136,6 +136,15 @@ static int ends_with_pkg(const char *name) {
     size_t n = strlen(name);
     return n > 4 && (!strcmp(name + n - 4, ".pkg") || !strcmp(name + n - 4, ".PKG"));
 }
+
+/* The Japanese release's update: same Unity build as the US game (data, relocations and symbols
+ * match the US 01.00 executables; only the SDK stamp and IL2CPP's link fingerprint differ). Some
+ * US dumps carry eboot.bin and Il2CppUserAssemblies.prx with all-zero code; this update brings
+ * working copies. */
+static int sibling_update(const BootPkgInfo *info) {
+    return !strcmp(info->title_id, "CUSA14078") && !strcmp(info->category, "gp");
+}
+
 static int scan_one(void *ctx, const char *name) {
     PkgScan *s = ctx;
     if (!ends_with_pkg(name) || s->count == 16) return 0;
@@ -146,8 +155,10 @@ static int scan_one(void *ctx, const char *name) {
         printf("PKG %s skipped: %s\n", name, err);
         return 0;
     }
-    /* PKGs of other games in the same folder are left alone. */
-    if (strcmp(f->info.title_id, "CUSA14219")) {
+    /* PKGs of other games in the same folder are left alone. The Japanese release's update
+     * (CUSA14078) is the same build as the US game and replaces its executables (see
+     * import_pkgs). */
+    if (strcmp(f->info.title_id, "CUSA14219") && !(sibling_update(&f->info))) {
         printf("PKG %s skipped: another game (%s, %s)\n", name, f->info.title_id, f->info.title);
         return 0;
     }
@@ -234,11 +245,31 @@ static int import_pkgs(PkgScan *s) {
         printf("Unpacking %s (%s %s)\n", s->list[i].path, s->list[i].info.category, s->list[i].info.app_ver);
         fflush(stdout);
         Uint64 t0 = SDL_GetTicks();
+        /* The Japanese update brings executables; the game keeps the US identity (param.sfo,
+         * NP and trophy files, artwork). */
+        static const char *const identity[] = {"param.sfo", "npbind.dat", "nptitle.dat", "keystone",
+                                               "trophy/trophy00.trp", "icon0.png", "pic0.png", "pic1.png",
+                                               "snd0.at9", "save_data.png", NULL};
+        uint8_t *kept[16] = {0};
+        size_t kept_size[16] = {0};
+        int sibling = sibling_update(&s->list[i].info);
+        for (int k = 0; sibling && identity[k]; ++k) {
+            char path[4096];
+            if (boot_path(path, sizeof(path), "%s/sce_sys/%s", game_dir, identity[k]))
+                kept[k] = boot_read_file(path, &kept_size[k]);
+        }
         if (boot_pkg_extract(s->list[i].path, game_dir, progress_cb, &p, err, sizeof(err))) {
             message("Could not unpack %s:\n%s", s->list[i].path, err);
             r = 1;
-            break;
         }
+        for (int k = 0; sibling && identity[k]; ++k) {
+            char path[4096];
+            if (kept[k] && boot_path(path, sizeof(path), "%s/sce_sys/%s", game_dir, identity[k]))
+                boot_write_file(path, kept[k], kept_size[k]);
+            free(kept[k]);
+        }
+        if (sibling && !r) printf("  executables from the Japanese update %s; US identity kept\n", s->list[i].info.app_ver);
+        if (r) break;
         p.done_before += boot_pkg_payload_size(s->list[i].path);
         printf("  done in %.1f s\n", (double)(SDL_GetTicks() - t0) / 1000.0);
     }

@@ -25,6 +25,21 @@ Both preparers now refuse a module whose code is all zeros, with a message sayin
 incomplete, instead of crashing later. A good base dump (or an update PKG, which carries its own
 eboot and modules) is needed.
 
+### The Japanese 1.01 update fills the gap
+
+`JP0082-CUSA14078_00-CHOCOBOSDUNGEONE-A0101-V0100.pkg` (gp 01.01, SHA-256
+`883566bcf3c704f9d57642e03362b82c2a6fb31b2de7cf7b1e945a765e5cb260`) carries eboot.bin,
+Il2CppUserAssemblies.prx, PS4Util, the four plugins and the system modules, all with working
+code, and no game data. Against the US 01.00 files: same sizes and program headers; data,
+dynamic and symbol segments identical except the SDK stamp in the process param (0x05050001 vs
+0x05508001) and IL2CPP's link fingerprint and build-path hash. So it is the same build, and its
+executables run the US data.
+
+First start now takes this update next to the US base (`sibling_update` in bootstrap.c): it is
+unpacked over the game like any update, but the US sce_sys identity (param.sfo, NP and trophy
+files, artwork) is kept. Checked offline: the merged folder prepares (579 fs->gs patches,
+115,813 function starts; the US eboot had no .eh_frame_hdr either).
+
 ## Layout
 
 ```
