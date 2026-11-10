@@ -1,0 +1,108 @@
+# Builds the player packages on every push to main (and by hand: Actions > Build Windows and
+# Linux > Run workflow). Artifacts: resogun-win64 (a zip with resogun.exe and its DLLs) and
+# resogun-linux-x86_64 (resogun + lib/ in a .tar.gz). Each is started on a clean machine first.
+name: Build Windows and Linux
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # The runner's Git turns LF into CRLF, and the FSR-Vulkan patches then no longer apply.
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          release: false
+          update: true
+          install: git patch
+          pacboy: >-
+            toolchain:p cmake:p ninja:p pkgconf:p python:p zlib:p
+            vulkan-headers:p vulkan-loader:p vulkan-memory-allocator:p glslang:p
+            sdl3:p fmt:p boost:p robin-map:p xxhash:p ffmpeg:p zydis:p
+            spirv-tools:p spirv-headers:p spirv-cross:p
+      - name: Build
+        run: bash build.sh
+      - name: Package
+        run: bash packaging/windows/package-resogun.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resogun-win64
+          path: out/stage/resogun
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resogun-win64-zip
+          path: dist/resogun-win64.zip
+          retention-days: 7
+
+  windows-smoke:
+    needs: windows
+    runs-on: windows-2025
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: resogun-win64
+          path: resogun
+      # No MSYS2 here: every DLL must come with the package. --cpu-features loads them all and
+      # exits without a game (the self-contained start would show a message box instead).
+      - name: Start on a clean machine
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath resogun\resogun.exe -ArgumentList '--cpu-features' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "resogun.exe --cpu-features exited with $($p.ExitCode)" }
+          Write-Host "resogun.exe starts; exit code $($p.ExitCode)"
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: bash packaging/linux/ci-deps.sh
+      - name: Build
+        run: bash build.sh
+      - name: Package
+        run: bash packaging/linux/package-resogun.sh
+      # The archive keeps the executable bits; an artifact folder would not.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resogun-linux-x86_64
+          path: dist/resogun-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  linux-smoke:
+    needs: linux
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # archlinux: SteamOS's base; fedora:42: Bazzite's; debian:13 has SteamOS 3.7's glibc.
+        image: ['archlinux:latest', 'fedora:42', 'debian:13', 'ubuntu:24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: resogun-linux-x86_64
+          path: dist
+      - name: Start on ${{ matrix.image }}
+        run: docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" bash /w/packaging/linux/smoke-resogun.sh /w/dist/resogun-linux-x86_64.tar.gz

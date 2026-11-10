@@ -1,0 +1,939 @@
+import os
+from pathlib import Path
+import queue
+import struct
+import sys
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+from paths import ROOT
+sys.path.insert(0, str(ROOT / 'launcher'))
+import gow3_launcher_win as launcher  # noqa: E402
+
+
+def sfo_bytes(**values):
+    """A minimal param.sfo (PSF 1.1) holding string values."""
+    entries, keys, data = b'', b'', b''
+    for key, value in values.items():
+        text = value.encode() + b'\0'
+        entries += struct.pack('<HHIII', len(keys), 0x204, len(text), len(text), len(data))
+        keys += key.encode() + b'\0'
+        data += text
+    keys_offset = 20 + len(entries)
+    return (struct.pack('<4sIIII', b'\0PSF', 0x101, keys_offset, keys_offset + len(keys), len(values))
+            + entries + keys + data)
+
+
+BASE_SFO = sfo_bytes(TITLE_ID='CUSA01623', APP_VER='01.00')
+
+
+class DiskModsTest(unittest.TestCase):
+    def test_frozen_launcher_uses_disk_loader_in_every_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port = Path(directory)
+            (port / 'scripts').mkdir()
+            (port / 'scripts/mods.py').write_text('SOURCE = "disk"\n')
+            bundled = types.ModuleType('mods')
+            with mock.patch.object(launcher, 'FROZEN', True), mock.patch.object(launcher, 'PORT_DIR', port), \
+                    mock.patch.dict(sys.modules, {'mods': bundled}):
+                module = launcher.load_mods()
+                self.assertEqual(module.SOURCE, 'disk')
+                self.assertIs(sys.modules['mods'], module)
+                self.assertIs(launcher.load_mods(), module)
+
+    def test_missing_disk_loader_uses_the_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundled = types.ModuleType('mods')
+            with mock.patch.object(launcher, 'FROZEN', True), \
+                    mock.patch.object(launcher, 'PORT_DIR', Path(directory)), \
+                    mock.patch.dict(sys.modules, {'mods': bundled}):
+                self.assertIs(launcher.load_mods(), bundled)
+
+    def test_invalid_disk_loader_has_a_clear_error_and_keeps_the_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port = Path(directory)
+            (port / 'scripts').mkdir()
+            (port / 'scripts/mods.py').write_text('raise ValueError("internal details")\n')
+            bundled = types.ModuleType('mods')
+            with mock.patch.object(launcher, 'FROZEN', True), mock.patch.object(launcher, 'PORT_DIR', port), \
+                    mock.patch.dict(sys.modules, {'mods': bundled}):
+                with self.assertRaisesRegex(RuntimeError, 'scripts/mods.py') as raised:
+                    launcher.load_mods()
+                self.assertNotIn('internal details', str(raised.exception))
+                self.assertIs(sys.modules['mods'], bundled)
+
+
+class ControlMapTest(unittest.TestCase):
+    def test_new_cheats_default_to_disabled(self):
+        self.assertEqual(launcher.INI_DEFAULTS['cheat_double_jumps'], '0')
+        self.assertEqual(launcher.INI_DEFAULTS['cheat_very_hard'], '0')
+        self.assertIn('cheat_double_jumps', launcher.INI_FLAGS)
+        self.assertIn('cheat_very_hard', launcher.INI_FLAGS)
+
+    def test_window_position_only_on_a_screen(self):
+        # #151: the last position is used again only while it lies on a monitor.
+        if launcher.WINDOWS:
+            self.assertTrue(launcher.on_screen(100, 100))
+            self.assertFalse(launcher.on_screen(-30000, -30000))
+        else:
+            self.assertTrue(launcher.on_screen(-30000, -30000))
+
+    def test_controller_buttons_and_stick(self):
+        # #145: the first connected pad's buttons; the left stick past a quarter reads as the D-pad.
+        def pad(raw):
+            def get_state(index, state):
+                if index != 1:
+                    return 1167  # ERROR_DEVICE_NOT_CONNECTED
+                state[4:6], state[8:10], state[10:12] = (v.to_bytes(2, 'little', signed=True) for v in raw)
+                return 0
+            return get_state
+        with mock.patch.object(launcher, '_xinput', pad((0x1000, 0, 0)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x1000)
+        with mock.patch.object(launcher, '_xinput', pad((0, -20000, 20000)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x1 | 0x4)
+        with mock.patch.object(launcher, '_xinput', pad((0x200, 20000, -20000)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x200 | 0x2 | 0x8)
+        with mock.patch.object(launcher, '_xinput', lambda _i, _s: 1167, create=True):
+            self.assertIsNone(launcher.xinput_buttons())
+
+    def test_pipeline_binary_cache_switch(self):
+        settings = {**launcher.APP_DEFAULTS}
+        self.assertTrue(settings['pipeline_binary_cache'])
+        self.assertEqual(launcher.game_environment(settings)['GOW3_PIPELINE_BINARIES'], '1')
+        settings['pipeline_binary_cache'] = False
+        self.assertEqual(launcher.game_environment(settings)['GOW3_PIPELINE_BINARIES'], '0')
+
+    def test_changed_buttons_in_table_order(self):
+        controls = {'key': {'circle': ' Left Shift ', 'cross': 'Q', 'square': ''}, 'pad': {'cross': 'b'}}
+        self.assertEqual(launcher.control_map(controls, 'key'), 'cross=Q,circle=Left Shift')
+        self.assertEqual(launcher.control_map(controls, 'pad'), 'cross=b')
+
+    def test_rejects_separators_unknown_buttons_and_bad_shapes(self):
+        controls = {'key': {'cross': 'a,b', 'circle': 'x=y', 'jump': 'Q', 'square': 5}}
+        self.assertEqual(launcher.control_map(controls, 'key'), '')
+        self.assertEqual(launcher.control_map([], 'key'), '')
+        self.assertEqual(launcher.control_map({}, 'pad'), '')
+
+    def test_only_changes_from_the_defaults_are_kept(self):
+        keys = {row[0]: launcher.default_input(row, 'key') for row in launcher.CONTROLS}
+        keys.update(cross='q', circle='LEFT SHIFT', square='  ')
+        self.assertEqual(launcher.control_changes(keys, 'key'), {'cross': 'q'})
+        pads = {b: p or '' for b, _k, p in launcher.CONTROLS}
+        pads.update(cross='b', l2='a')
+        self.assertEqual(launcher.control_changes(pads, 'pad'), {'cross': 'b'})  # L2/R2: triggers only
+
+    def test_touchpad_sides_are_separate_buttons(self):
+        rows = {b: (k, p) for b, k, p in launcher.CONTROLS}
+        self.assertNotIn('touchpad', rows)
+        self.assertEqual(rows['touchpad_left'], ('Tab', None))  # photo mode: L1 + the right-click button
+        self.assertEqual(rows['touchpad_right'], ('Backspace', 'back'))  # pause menu
+        self.assertEqual(launcher.control_map({'pad': {'touchpad_right': 'guide'}}, 'pad'), 'touchpad_right=guide')
+        self.assertEqual(launcher.control_map({'key': {'touchpad_right': 'Delete'}}, 'key'), 'touchpad_right=Delete')
+
+    def test_saved_touchpad_key_moves_to_the_left_side(self):
+        # Settings saved before the sides were split named the left click 'touchpad'.
+        self.assertEqual(launcher.control_map({'key': {'touchpad': 'T'}}, 'key'), 'touchpad_left=T')
+        self.assertEqual(launcher.control_map({'key': {'touchpad': 'T', 'touchpad_left': 'Y'}}, 'key'), 'touchpad_left=Y')
+        self.assertEqual(launcher.control_values({'key': {'touchpad': 'T'}}, 'key'), {'touchpad_left': 'T'})
+        self.assertEqual(launcher.control_values({'pad': {'touchpad': 'misc1'}}, 'pad'), {})  # no gamepad box for it
+
+    def test_both_styles_name_every_default_gamepad_button(self):
+        for labels in launcher.PAD_STYLES.values():
+            self.assertTrue(all(p in labels for _b, _k, p in launcher.CONTROLS if p))
+            self.assertEqual(len(set(labels.values())), len(labels))
+
+    def test_pressed_keys_become_sdl_names(self):
+        self.assertEqual(launcher.sdl_key_name('q'), 'Q')
+        self.assertEqual(launcher.sdl_key_name('Q'), 'Q')
+        self.assertEqual(launcher.sdl_key_name('7'), '7')
+        self.assertEqual(launcher.sdl_key_name('F12'), 'F12')
+        self.assertEqual(launcher.sdl_key_name('space'), 'Space')
+        self.assertEqual(launcher.sdl_key_name('Shift_L'), 'Left Shift')
+        self.assertEqual(launcher.sdl_key_name('Control_L'), 'Left Ctrl')
+        self.assertEqual(launcher.sdl_key_name('KP_5'), 'Keypad 5')
+        self.assertEqual(launcher.sdl_key_name('BackSpace'), 'Backspace')
+
+    def test_keys_that_cannot_be_bound(self):
+        for keysym in ('Insert', 'Win_L', 'Print', 'F25', 'eacute'):
+            self.assertIsNone(launcher.sdl_key_name(keysym), keysym)
+        for keysym in ('Insert', 'Win_L', 'Win_R', 'Print'):
+            self.assertIn(keysym, launcher.RESERVED_KEYS)
+
+    def test_more_keys_can_be_bound(self):
+        expected = {'Escape': 'Escape', 'comma': 'Comma', 'equal': 'Equals', 'Pause': 'Pause',
+                    'Scroll_Lock': 'ScrollLock', 'Num_Lock': 'Numlock', 'App': 'Application',
+                    'KP_Home': 'Keypad 7', 'KP_Insert': 'Keypad 0', 'KP_Delete': 'Keypad .', 'F24': 'F24'}
+        for keysym, name in expected.items():
+            self.assertEqual(launcher.sdl_key_name(keysym), name, keysym)
+            self.assertEqual(launcher.control_map({'key': {'cross': name}}, 'key'), f'cross={name}')
+
+    def test_captured_names_reach_the_game(self):
+        for keysym in ('q', 'space', 'Shift_L', 'KP_Enter', 'minus', 'F5'):
+            name = launcher.sdl_key_name(keysym)
+            self.assertNotIn(',', name)
+            value = launcher.control_map({'key': {'cross': name}}, 'key')
+            self.assertEqual(value, f'cross={name}')
+
+    def test_mouse_inputs_become_game_names(self):
+        self.assertEqual([launcher.mouse_name(n) for n in (1, 2, 3, 4, 5)],
+                         ['Mouse Left', 'Mouse Middle', 'Mouse Right', 'Mouse Back', 'Mouse Forward'])
+        self.assertEqual(launcher.mouse_name(wheel_delta=120), 'Wheel Up')
+        self.assertEqual(launcher.mouse_name(wheel_delta=-120), 'Wheel Down')
+        self.assertIsNone(launcher.mouse_name(9))
+        self.assertTrue(launcher.is_mouse_name(' wheel down '))
+        self.assertFalse(launcher.is_mouse_name('Left Shift'))
+
+    def test_the_mouse_binds_in_the_keyboard_table(self):
+        controls = {'key': {'square': 'Mouse Left', 'cross': 'Q'}}
+        self.assertEqual(launcher.control_values(controls, 'key'), {'square': 'Mouse Left', 'cross': 'Q'})
+
+    def test_keyboard_defaults_put_square_and_triangle_on_the_mouse(self):
+        pairs = dict(entry.split('=', 1) for entry in launcher.keyboard_map({}).split(','))
+        self.assertEqual((pairs['square'], pairs['triangle'], pairs['r2']), ('Mouse Left', 'Mouse Right', 'Mouse Forward'))
+        for button, key, _pad in launcher.CONTROLS:  # written where the game's own key differs
+            default = launcher.KEY_DEFAULTS.get(button, key)
+            if default.casefold() != key.casefold():
+                self.assertEqual(pairs.pop(button), default)
+        self.assertEqual(pairs, {})
+        controls = {'key': {'square': 'Wheel Up', 'cross': 'Q', 'triangle': 'E'}}
+        self.assertIn('cross=Q,square=Wheel Up,triangle=E,', launcher.keyboard_map(controls))
+        values = {row[0]: launcher.default_input(row, 'key') for row in launcher.CONTROLS}
+        self.assertEqual(launcher.control_changes(values, 'key'), {})
+        values['square'] = 'E'
+        self.assertEqual(launcher.control_changes(values, 'key'), {'square': 'E'})
+
+    def test_the_keyboard_table_has_only_the_ps4_buttons(self):
+        # God of War III's own actions (Rage of Sparta, grab, dodge) are gone: L3 and R3 keep their keys.
+        saved = {'key': {'rage': 'Mouse Middle', 'grab': 'C', 'dodge': 'V'}}
+        self.assertEqual(launcher.control_values(saved, 'key'), {})
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'controls': saved, 'rage_one_input': True})
+        self.assertNotIn('rage', env['GOW3_KEY_MAP'])
+        self.assertNotIn('l3=None', env['GOW3_KEY_MAP'])
+        self.assertNotIn('rage_one_input', launcher.APP_DEFAULTS)
+        self.assertNotIn('native_input', launcher.APP_DEFAULTS)
+
+    def test_saved_keyboard_binds_keep_their_layout(self):
+        old = {'controls': {'key': {'cross': 'Q'}, 'pad': {'cross': 'b'}}, 'pad_style': 'xbox'}
+        new = launcher.migrate_controls(old)
+        key = new['controls']['key']
+        self.assertEqual(key['cross'], 'Q')
+        for button, game_key, _pad in launcher.CONTROLS:  # the game's keys, not the new defaults
+            if button != 'cross':
+                self.assertEqual(key[button], game_key)
+        self.assertEqual(new['controls']['pad'], {'cross': 'b'})
+        self.assertEqual(new['controls_layout'], launcher.CONTROLS_LAYOUT)
+        self.assertEqual(launcher.migrate_controls(new), new)  # once
+        game = launcher.keyboard_map(new['controls'])
+        self.assertIn('cross=Q', game)
+        self.assertNotIn('square=', game)  # still E, the game's own key
+        apart = launcher.migrate_controls({'controls': {'key': {'cross': 'Q'}}, 'native_rage': False})
+        self.assertNotIn('native_rage', apart)
+
+    def test_native_translation_carries_over(self):
+        old = {'controls': {'key': {'cross': 'Q'}, 'native': {'circle': 'Mouse Middle'}},
+               'native_input': True, 'native_rage': True}
+        new = launcher.migrate_controls(old)
+        self.assertEqual(new['controls']['key'], {'circle': 'Mouse Middle'})
+        self.assertNotIn('native', new['controls'])
+        self.assertNotIn('native_input', new)
+        self.assertNotIn('native_rage', new)
+        unused = launcher.migrate_controls({'controls': {'native': {'circle': 'Mouse Middle'}}, 'native_input': False})
+        self.assertEqual(unused['controls'], {})
+
+    def test_new_players_get_the_new_defaults(self):
+        self.assertEqual(launcher.migrate_controls({}), {})
+        fresh = launcher.migrate_controls({'game_dir': 'D:/games'})
+        self.assertEqual(fresh['controls'], {})
+        self.assertIn('square=Mouse Left', launcher.keyboard_map(fresh['controls']))
+
+    def test_binding_a_used_key_swaps_the_buttons(self):
+        bindings = {'cross': 'Space', 'circle': 'Left Shift', 'square': 'E'}
+        self.assertEqual(launcher.bind_key(bindings, 'cross', 'e'), 'square')
+        self.assertEqual(bindings, {'cross': 'e', 'circle': 'Left Shift', 'square': 'Space'})
+        self.assertIsNone(launcher.bind_key(bindings, 'circle', 'Q'))
+        self.assertEqual(bindings['circle'], 'Q')
+
+    def test_environment(self):
+        settings = {**launcher.APP_DEFAULTS, 'controls': {'key': {'cross': 'Q'}}}
+        env = launcher.game_environment(settings)
+        self.assertTrue(env['GOW3_KEY_MAP'].startswith('cross=Q,square=Mouse Left,'))
+        self.assertNotIn('GOW3_PAD_MAP', env)
+        self.assertEqual(env['GOW3_PARALLEL_WARMUP'], '1')
+        self.assertEqual(env['GOW3_BACKGROUND_WARMUP'], '1')
+        self.assertEqual(env['GOW3_PERF_DIAG'], '0')
+        self.assertEqual(env['GOW3_PARTIAL_HEIGHT_VIEWS'], '1')
+        self.assertEqual(launcher.game_environment({**settings, 'partial_height_views': False})['GOW3_PARTIAL_HEIGHT_VIEWS'], '0')
+        self.assertNotIn('GOW3_FRAME_CAPTURE_KEY', {k for k in env if k not in __import__('os').environ})
+        self.assertEqual(launcher.game_environment({**settings, 'frame_capture_key': True})['GOW3_FRAME_CAPTURE_KEY'], '1')
+        # Graphics options live in gow3.ini (run.py and the in-game menu), not in the environment.
+        for name in ('GOW3_FULLSCREEN', 'GOW3_PRESENT_MODE', 'GOW3_FPS_LIMIT', 'GOW3_ASYNC_SHADERS',
+                     'GOW3_DEFERRED_READBACK', 'GOW3_STALE_READBACK', 'GOW3_FSR1', 'GOW3_RCAS'):
+            self.assertNotIn(name, {k for k in env if k not in __import__('os').environ})
+        old = launcher.game_environment({**settings, 'extra_env': 'GOW3_DRAW_PIPE=0'})
+        self.assertNotIn('GOW3_DRAW_PIPE', old)  # the old free-text field is ignored
+        self.assertEqual(launcher.game_environment({**settings, 'parallel_warmup': False})['GOW3_PARALLEL_WARMUP'], '0')
+        self.assertEqual(launcher.game_environment({**settings, 'background_warmup': False})['GOW3_BACKGROUND_WARMUP'], '0')
+
+    def test_cheats_join_the_patch_selection(self):
+        # Off by default; on, each cheat's patch joins the launcher's selection (or is the only extra name).
+        self.assertFalse(any(launcher.APP_DEFAULTS[key] for key, *_rest in launcher.CHEATS))
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'cheat_events': True, 'cheat_rank': True,
+                                         'cheat_ships': True, 'cheat_van_uber': True, 'cheat_vr_ships': True})
+        self.assertEqual(env['GOW3_PATCHES'].split(';')[-5:],
+                         ['Cheat - Unlock all HD and Fury events', 'Cheat - Top rank in 2048',
+                          'Cheat - Unlock all ships', 'Cheat - Van Uber team (owned DLC)',
+                          'Cheat - VR ships outside VR'])
+        env = launcher.game_environment(dict(launcher.APP_DEFAULTS))
+        self.assertNotIn('Cheat - ', env.get('GOW3_PATCHES', ''))
+
+    def test_ps4_pro_switch_reaches_the_game(self):
+        # Off by default; the launcher's choice wins over a GOW3_NEO left in the user's environment.
+        self.assertFalse(launcher.APP_DEFAULTS['ps4_pro'])
+        for saved, value in ((True, '1'), (False, '0'), (None, '0')):
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'ps4_pro': saved})
+            self.assertEqual(env['GOW3_NEO'], value)
+
+    def test_anti_aliasing_switch_reaches_the_game(self):
+        # Graphics > Temporal anti-aliasing (off by default); run.py keeps the upscaler out unless it is on.
+        self.assertFalse(launcher.APP_DEFAULTS['experimental_upscaler'])
+        for saved, value in ((True, '1'), (False, '0'), (None, '0')):
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'experimental_upscaler': saved})
+            self.assertEqual(env['GOW3_EXPERIMENTAL_UPSCALER'], value)
+
+    def test_glyph_style_is_off_by_default(self):
+        self.assertEqual(launcher.APP_DEFAULTS['glyph_style'], 'off')
+        self.assertNotIn('GOW3_GLYPH_STYLE', launcher.game_environment({**launcher.APP_DEFAULTS}))
+
+    def test_no_god_of_war_button_icons(self):
+        # They are drawn into God of War III's R_UI.WAD, which WipEout has not: a saved or inherited
+        # choice never reaches the game.
+        from unittest import mock
+
+        with mock.patch.dict(launcher.os.environ, {'GOW3_GLYPH_STYLE': 'xbox'}):
+            for style in ('auto', 'xbox', 'nintendo', 'keyboard', 'off'):
+                env = launcher.game_environment({**launcher.APP_DEFAULTS, 'glyph_style': style})
+                self.assertNotIn('GOW3_GLYPH_STYLE', env)
+
+    def test_settings_keys_kept(self):
+        for key in ('game_dir', 'user_dir', 'mods_dir', 'patches_dir', 'language', 'hdr',
+                    'draw_pipe', 'readbacks', 'background_warmup', 'parallel_warmup', 'controls', 'pad_style', 'glyph_style'):
+            self.assertIn(key, launcher.APP_DEFAULTS)
+        # WipEout's profile name (#129): trimmed, at most 16 characters; empty leaves "Player".
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'player_name': ' Arial Tetsuo Racer '})
+        self.assertEqual(env['GOW3_USER_NAME'], 'Arial Tetsuo Rac')
+        self.assertNotIn('GOW3_USER_NAME', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+        # Profiles (#162): the runtime keeps a profile's saves in profiles/<name>; empty = the main saves.
+        self.assertEqual(launcher.game_environment({**launcher.APP_DEFAULTS, 'profile': ' Sam '})['GOW3_PROFILE'], 'Sam')
+        self.assertNotIn('GOW3_PROFILE', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+        for key in ('display_mode', 'fps_limit', 'render_resolution', 'engine_fps'):
+            self.assertIn(key, launcher.INI_DEFAULTS)
+
+    def test_graphics_defaults_match_the_game(self):
+        d = launcher.INI_DEFAULTS
+        self.assertEqual((d['display_mode'], d['vsync'], d['fps_limit'], d['engine_fps']), ('windowed', '1', '0', '120'))
+        self.assertEqual([v for v, _t in launcher.FPS_LIMITS], ['30', '40', '60', '100', '120', '144', '165', '240', '0'])
+        self.assertEqual(d['frames_queued'], '1')
+        self.assertEqual([v for v, _t in launcher.FRAMES_QUEUED], ['1', '2', '0'])
+        self.assertNotIn('GOW3_FRAMES_AHEAD', launcher.game_environment({**launcher.APP_DEFAULTS, 'frames_ahead': '2'}))
+
+
+class GameFilesTest(unittest.TestCase):
+    def test_copy_in_progress_blocks_another_play_or_status_refresh(self):
+        from unittest import mock
+
+        app = launcher.Launcher.__new__(launcher.Launcher)
+        app.process = None
+        app.app = {**launcher.APP_DEFAULTS}
+        app.ui_calls = queue.Queue()
+        for name in ('collect', 'play_button', 'status', 'meta_dir', 'summary', 'messagebox', 'show'):
+            setattr(app, name, mock.Mock())
+        with mock.patch.object(launcher.threading, 'Thread'), \
+                mock.patch.object(launcher, 'game_info', return_value=('God of War III', '01.02')):
+            app.adopt_in_background('Sc0', 'Image0')
+            app.play()
+            app.refresh_status()
+        app.collect.assert_not_called()
+        self.assertEqual(app.play_button.configure.call_args.kwargs['state'], 'disabled')
+        self.assertEqual(app.status.configure.call_args.kwargs['text'], 'Copying the system files…')
+
+    def test_unreadable_executable_is_named_before_starting(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'eboot.bin'
+            path.write_bytes(b'x')
+            with mock.patch.object(Path, 'open', side_effect=PermissionError('Access is denied')):
+                self.assertEqual(launcher.file_state(path), 'unreadable')
+
+    def test_missing_game_files(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / 'sce_module').mkdir()
+            (folder / 'sce_module/libSceFios2.prx').write_bytes(b'x')
+            self.assertEqual(launcher.missing_game_files(folder),
+                             [('eboot.bin', 'missing'), ('sce_sys/param.sfo', 'missing'), ('sce_module/libc.prx', 'missing')])
+            (folder / 'sce_sys').mkdir()
+            (folder / 'eboot.bin').write_bytes(b'x')
+            (folder / 'sce_sys/param.sfo').write_bytes(BASE_SFO)
+            (folder / 'sce_module/libc.prx').write_bytes(b'x')
+            self.assertEqual(launcher.missing_game_files(folder), [])
+            self.assertEqual(launcher.missing_game_files(folder, launcher.REQUIRED_UPDATE_FILES), [])
+            # A param.sfo that is not one (a one-byte placeholder, a copy cut short) is named too.
+            (folder / 'sce_sys/param.sfo').write_bytes(b'x')
+            self.assertEqual(launcher.missing_game_files(folder), [('sce_sys/param.sfo', 'invalid')])
+            self.assertEqual(launcher.describe_missing([('sce_sys/param.sfo', 'invalid')]),
+                             ['sce_sys/param.sfo (not a param.sfo)'])
+            # One that is there but cannot be read is 'unreadable', whether the stat or the read fails.
+            from unittest import mock
+            (folder / 'sce_sys/param.sfo').write_bytes(BASE_SFO)
+            real_open = Path.open
+
+            def denied_open(path, *args, **kwargs):
+                if path.name == 'param.sfo':
+                    raise PermissionError(13, 'Access is denied', str(path))
+                return real_open(path, *args, **kwargs)
+            with mock.patch.object(Path, 'open', denied_open):
+                self.assertEqual(launcher.missing_game_files(folder), [('sce_sys/param.sfo', 'unreadable')])
+            # A folder in the file's place is named as such, not as missing.
+            (folder / 'sce_module/libc.prx').unlink()
+            (folder / 'sce_module/libc.prx').mkdir()
+            self.assertEqual(launcher.missing_game_files(folder), [('sce_module/libc.prx', 'folder')])
+            self.assertEqual(launcher.describe_missing([('sce_module/libc.prx', 'folder')]),
+                             ['sce_module/libc.prx (a folder, not a file)'])
+            (folder / 'sce_module/libc.prx').rmdir()
+            (folder / 'sce_module/libc.prx').write_bytes(b'x')
+            # Empty files (a placeholder made by hand, a copy that failed) count as missing: the
+            # game cannot start from them, and the message says which they are.
+            (folder / 'eboot.bin').write_bytes(b'')
+            (folder / 'sce_sys/param.sfo').write_bytes(b'')
+            missing = launcher.missing_game_files(folder)
+            self.assertEqual(missing, [('eboot.bin', 'empty'), ('sce_sys/param.sfo', 'empty')])
+            self.assertEqual(launcher.describe_missing(missing), ['eboot.bin (empty)', 'sce_sys/param.sfo (empty)'])
+            with mock.patch.object(launcher, 'LANG', 'pt'):
+                self.assertEqual(launcher.describe_missing(missing), ['eboot.bin (vazio)', 'sce_sys/param.sfo (vazio)'])
+            # A file this user may not read is there, so it is named as such, not as missing.
+            real_stat = Path.stat
+
+            def denied_stat(path, *args, **kwargs):
+                if path.name == 'libc.prx':
+                    raise PermissionError(13, 'Access is denied', str(path))
+                return real_stat(path, *args, **kwargs)
+            with mock.patch.object(Path, 'stat', denied_stat):
+                missing = launcher.missing_game_files(folder)
+            self.assertEqual(missing, [('eboot.bin', 'empty'), ('sce_sys/param.sfo', 'empty'),
+                                       ('sce_module/libc.prx', 'unreadable')])
+            self.assertEqual(launcher.describe_missing(missing)[2], 'sce_module/libc.prx (unreadable)')
+
+    def test_ready_to_play_needs_a_complete_dump(self):
+        # The --play role (Steam, "Play WipEout.exe") opens the launcher instead of
+        # starting a dump the Play button would refuse.
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            self.assertFalse(launcher.ready_to_play(folder))
+            (folder / 'eboot.bin').write_bytes(b'x')
+            self.assertFalse(launcher.ready_to_play(folder))
+            (folder / 'sce_sys').mkdir()
+            (folder / 'sce_module').mkdir()
+            for name, _check in launcher.REQUIRED_GAME_FILES:
+                (folder / name).write_bytes(BASE_SFO if name.endswith('param.sfo') else b'x')
+            self.assertTrue(launcher.ready_to_play(folder))
+            self.assertFalse(launcher.ready_to_play(folder, str(folder)))  # one folder for both
+            # The update folder, when set, must be complete as well.
+            update = folder / 'update'
+            (update / 'sce_sys').mkdir(parents=True)
+            (update / 'eboot.bin').write_bytes(b'x')
+            self.assertFalse(launcher.ready_to_play(folder, str(update)))
+            (update / 'sce_sys/param.sfo').write_bytes(BASE_SFO)
+            self.assertTrue(launcher.ready_to_play(folder, str(update)))
+
+    def test_system_files_beside_a_pkg_extraction(self):
+        # PKG extractors keep the system files (param.sfo, icon0.png, pic1.png, trophy/) in Sc0/
+        # next to the game files in Image0/; the port reads them from the game's sce_sys/.
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            game = root / 'Image0'
+            (game / 'sce_sys').mkdir(parents=True)
+            (game / 'sce_sys/playgo-chunk.dat').write_bytes(b'game')
+            (root / 'Sc1').mkdir()  # a sibling without param.sfo is not the one
+            self.assertIsNone(launcher.system_files_beside(game))
+            (root / 'Sc0/trophy').mkdir(parents=True)
+            (root / 'Sc0/param.sfo').write_bytes(BASE_SFO)
+            (root / 'Sc0/icon0.png').write_bytes(b'icon')
+            (root / 'Sc0/playgo-chunk.dat').write_bytes(b'other')
+            (root / 'Sc0/trophy/trophy00.trp').write_bytes(b'trophies')
+            self.assertEqual(launcher.system_files_beside(game), root / 'Sc0')
+            # param.sfo goes last: while it is missing the copy is offered again after a failure.
+            self.assertEqual(launcher.adopt_system_files(root / 'Sc0', game),
+                             ['icon0.png', 'trophy/trophy00.trp', 'param.sfo'])
+            self.assertEqual((game / 'sce_sys/param.sfo').read_bytes(), BASE_SFO)
+            self.assertEqual((game / 'sce_sys/trophy/trophy00.trp').read_bytes(), b'trophies')
+            # The game's own files are never replaced, and once param.sfo is there nothing is offered.
+            self.assertEqual((game / 'sce_sys/playgo-chunk.dat').read_bytes(), b'game')
+            self.assertIsNone(launcher.system_files_beside(game))
+            self.assertEqual(launcher.adopt_system_files(root / 'Sc0', game), [])
+            # An empty param.sfo made by hand to get past the old check counts as missing and is replaced.
+            (game / 'sce_sys/param.sfo').write_bytes(b'')
+            self.assertEqual(launcher.system_files_beside(game), root / 'Sc0')
+
+            # A copy that fails leaves nothing half-written behind to be mistaken for the file.
+            def cut_short(src, dst):
+                Path(dst).write_bytes(b'half')
+                raise OSError(28, 'No space left on device', str(dst))
+            with mock.patch.object(launcher.shutil, 'copy2', cut_short), self.assertRaises(OSError):
+                launcher.adopt_system_files(root / 'Sc0', game)
+            self.assertEqual((game / 'sce_sys/param.sfo').read_bytes(), b'')
+            self.assertEqual(list((game / 'sce_sys').glob('*.part')), [])
+            self.assertEqual(launcher.adopt_system_files(root / 'Sc0', game), ['param.sfo'])
+            self.assertEqual((game / 'sce_sys/param.sfo').read_bytes(), BASE_SFO)
+            # ... and so does a non-empty one that is not a param.sfo.
+            (game / 'sce_sys/param.sfo').write_bytes(b'x')
+            self.assertEqual(launcher.system_files_beside(game), root / 'Sc0')
+            self.assertEqual(launcher.adopt_system_files(root / 'Sc0', game), ['param.sfo'])
+            self.assertEqual((game / 'sce_sys/param.sfo').read_bytes(), BASE_SFO)
+            (game / 'sce_sys/param.sfo').unlink()
+            # A file that would land on one of the game's folders is refused, not copied inside it.
+            (root / 'Clash').mkdir()
+            (root / 'Clash/trophy').write_bytes(b'file')
+            with self.assertRaises(OSError):
+                launcher.adopt_system_files(root / 'Clash', game)
+            self.assertFalse((game / 'sce_sys/trophy/trophy').exists())
+            # For an update folder the candidate must be the same title in another version: the
+            # base game's own Sc0 is not it.
+            base = launcher.load_sfo(root / 'Sc0/param.sfo')
+            self.assertEqual(base['APP_VER'], '01.00')
+            beside = root / 'Base0'  # the base game beside this folder: Sc0 at its version is its own
+            self.assertIsNone(launcher.system_files_beside(game, reference=base, base=beside))
+            self.assertEqual(launcher.system_files_beside(game, reference={'TITLE_ID': 'CUSA01623', 'APP_VER': '01.02'},
+                                                         base=beside), root / 'Sc0')
+            self.assertIsNone(launcher.system_files_beside(game, reference={'TITLE_ID': 'CUSA00001', 'APP_VER': '01.02'},
+                                                           base=beside))
+            # In its own folder, an update at the base game's version is still this title's Sc0.
+            self.assertEqual(launcher.system_files_beside(game, reference=base, base=root / 'elsewhere' / 'Image0'),
+                             root / 'Sc0')
+            # An unreadable param.sfo in the folder is a different problem: nothing is offered.
+            (game / 'sce_sys/param.sfo').write_bytes(BASE_SFO)
+            real_stat = Path.stat
+
+            def denied_stat(path, *args, **kwargs):
+                if path.name == 'param.sfo' and 'Image0' in path.parts:
+                    raise PermissionError(13, 'Access is denied', str(path))
+                return real_stat(path, *args, **kwargs)
+            with mock.patch.object(Path, 'stat', denied_stat):
+                self.assertIsNone(launcher.system_files_beside(game))
+            (game / 'sce_sys/param.sfo').unlink()
+            # Without the base game's param.sfo an Sc0 beside the base game is ambiguous.
+            self.assertIsNone(launcher.system_files_beside(game, base=beside))
+            # Only the extractors' own Sc0 counts: another folder with a param.sfo, or an Sc0 whose
+            # param.sfo is not one, is another title's or cannot be read, offers nothing.
+            (root / 'Sc0').rename(root / 'Other')
+            self.assertIsNone(launcher.system_files_beside(game))
+            (root / 'Other').rename(root / 'Sc0')
+            (root / 'Sc0/param.sfo').write_bytes(b'not an sfo')
+            self.assertIsNone(launcher.system_files_beside(game))
+            (root / 'Sc0/param.sfo').write_bytes(sfo_bytes(TITLE_ID='CUSA00001', TITLE='Other Game', APP_VER='01.00'))
+            self.assertIsNone(launcher.system_files_beside(game))
+            (root / 'Sc0/param.sfo').write_bytes(BASE_SFO)
+            real_open = Path.open
+
+            def locked_open(path, *args, **kwargs):
+                if 'Sc0' in path.parts:
+                    raise PermissionError(13, 'Access is denied', str(path))
+                return real_open(path, *args, **kwargs)
+            with mock.patch.object(Path, 'open', locked_open):
+                self.assertIsNone(launcher.system_files_beside(game))
+            self.assertEqual(launcher.system_files_beside(game), root / 'Sc0')
+            # A drive root has no siblings to look at.
+            self.assertIsNone(launcher.system_files_beside(root.anchor))
+
+    def test_play_offers_to_adopt_the_system_files(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        def extraction(root, name, version, placeholder=None):
+            """A PKG extraction in <name>/: Image0/ with the game files, Sc0/ with param.sfo beside it."""
+            game = root / name / 'Image0'
+            (game / 'sce_module').mkdir(parents=True)
+            (game / 'sce_sys').mkdir()
+            (game / 'eboot.bin').write_bytes(b'x')
+            for prx in ('libc.prx', 'libSceFios2.prx'):
+                (game / 'sce_module' / prx).write_bytes(b'x')
+            if placeholder is not None:
+                (game / 'sce_sys/param.sfo').write_bytes(placeholder)
+            (root / name / 'Sc0').mkdir()
+            (root / name / 'Sc0/param.sfo').write_bytes(sfo_bytes(TITLE_ID='CUSA01623', APP_VER=version))
+            return game
+
+        def launcher_app(game, update=''):
+            app = launcher.Launcher.__new__(launcher.Launcher)
+            app.process = None
+            app.app = {**launcher.APP_DEFAULTS, 'game_dir': str(game), 'update_dir': update}
+            app.messagebox = mock.Mock()
+            app.ui_calls = queue.Queue()
+            for name in ('collect', 'show', 'set_log', 'game_changed', 'play_button', 'status'):
+                setattr(app, name, mock.Mock())
+            return app
+
+        def play(app):
+            """Whether the game was started. The copy runs in a worker thread that presses Play
+            again through ui_calls: both run here, in order."""
+            with mock.patch.object(launcher.subprocess, 'Popen', return_value=mock.Mock()) as start, \
+                    mock.patch.object(launcher, 'GameJob'), mock.patch.object(launcher.threading, 'Thread') as thread, \
+                    mock.patch.object(launcher, 'open_play_log', return_value=launcher._NullLog()):
+                app.play()
+                for call in thread.call_args_list:  # grows while the workers press Play again
+                    target = call.kwargs.get('target')
+                    if target is not None and target.__name__ == 'work':
+                        target()
+                        while not app.ui_calls.empty():
+                            app.ui_calls.get()()
+            return start.called
+
+        cases = [('yes', True, None), ('yes over an empty placeholder', True, b''),
+                 ('yes over a one-byte placeholder', True, b'x'), ('no', False, None)]
+        for label, answer, placeholder in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                game = extraction(root, 'game', '01.00', placeholder)
+                app = launcher_app(game)
+                app.messagebox.askyesno.return_value = answer
+                started = play(app)
+                self.assertIn(str(root / 'game' / 'Sc0'), app.messagebox.askyesno.call_args.args[1])
+                if answer:
+                    self.assertEqual((game / 'sce_sys/param.sfo').read_bytes(), BASE_SFO)
+                    app.game_changed.assert_called_once()
+                    app.messagebox.showerror.assert_not_called()
+                    self.assertTrue(started)
+                else:
+                    self.assertFalse((game / 'sce_sys/param.sfo').exists())
+                    self.assertIn('sce_sys/param.sfo', app.messagebox.showerror.call_args.args[1])
+                    self.assertFalse(started)
+        with self.subTest('update folder'), tempfile.TemporaryDirectory() as root:
+            # A separately dumped update has the same layout and gets the same offer.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            update = extraction(root, 'update', '01.02')
+            app = launcher_app(game, str(update))
+            app.messagebox.askyesno.return_value = True
+            self.assertTrue(play(app))
+            self.assertIn(str(root / 'update' / 'Sc0'), app.messagebox.askyesno.call_args.args[1])
+            self.assertEqual(launcher.game_sfo(update)['APP_VER'], '01.02')
+        with self.subTest('update beside the base game'), tempfile.TemporaryDirectory() as root:
+            # The base game's own Sc0 (same version) is never offered to the update folder, which
+            # is then refused as incomplete.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            update = root / 'game' / 'Update0'
+            (update / 'sce_sys').mkdir(parents=True)
+            (update / 'eboot.bin').write_bytes(b'x')
+            app = launcher_app(game, str(update))
+            self.assertFalse(play(app))
+            app.messagebox.askyesno.assert_not_called()
+            self.assertIn('sce_sys/param.sfo', app.messagebox.showerror.call_args.args[1])
+            self.assertIn(str(update), app.messagebox.showerror.call_args.args[1])
+        with self.subTest('update at the base version in its own folder'), tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            update = extraction(root, 'update', '01.00')
+            app = launcher_app(game, str(update))
+            app.messagebox.askyesno.return_value = True
+            self.assertTrue(play(app))
+            self.assertIn(str(root / 'update' / 'Sc0'), app.messagebox.askyesno.call_args.args[1])
+        with self.subTest('update folder without eboot.bin'), tempfile.TemporaryDirectory() as root:
+            # Not a game folder (a typo): no Sc0 search for it, and the error names what is missing.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            update = extraction(root, 'update', '01.02')
+            (update / 'eboot.bin').unlink()
+            app = launcher_app(game, str(update))
+            self.assertFalse(play(app))
+            app.messagebox.askyesno.assert_not_called()
+            self.assertIn('eboot.bin', app.messagebox.showerror.call_args.args[1])
+        with self.subTest('update declined'), tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            update = extraction(root, 'update', '01.02')
+            app = launcher_app(game, str(update))
+            app.messagebox.askyesno.return_value = False
+            self.assertFalse(play(app))
+            self.assertIn('sce_sys/param.sfo', app.messagebox.showerror.call_args.args[1])
+        with self.subTest('update before the game is complete'), tempfile.TemporaryDirectory() as root:
+            # Each folder's own Sc0 is offered in turn; declining both leaves the game incomplete.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00')
+            update = extraction(root, 'update', '01.02')
+            app = launcher_app(game, str(update))
+            app.messagebox.askyesno.return_value = False
+            self.assertFalse(play(app))
+            self.assertEqual(app.messagebox.askyesno.call_count, 2)
+            self.assertIn(str(root / 'update' / 'Sc0'), app.messagebox.askyesno.call_args.args[1])
+            self.assertFalse((update / 'sce_sys/param.sfo').exists())
+            self.assertIn('sce_sys/param.sfo', app.messagebox.showerror.call_args.args[1])
+        with self.subTest('update folder is the game folder'), tempfile.TemporaryDirectory() as root:
+            # Not offered twice, and refused before run.py would refuse it.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00', BASE_SFO)
+            app = launcher_app(game, str(game) + os.sep)
+            self.assertFalse(play(app))
+            app.messagebox.askyesno.assert_not_called()
+            self.assertIn('two separate folders', app.messagebox.showerror.call_args.args[1])
+        with self.subTest('copy fails'), tempfile.TemporaryDirectory() as root:
+            # One error, naming the cause; not the incomplete-dump message on top of it.
+            root = Path(root)
+            game = extraction(root, 'game', '01.00')
+            app = launcher_app(game)
+            app.messagebox.askyesno.return_value = True
+            with mock.patch.object(launcher, 'adopt_system_files', side_effect=PermissionError(13, 'Access is denied')):
+                self.assertFalse(play(app))
+            self.assertEqual(app.messagebox.showerror.call_count, 1)
+            self.assertIn('Access is denied', app.messagebox.showerror.call_args.args[1])
+            app.game_changed.assert_called_once()  # what was copied before the failure shows
+            app.show.assert_called_with('game')
+
+
+class GpuChoiceTest(unittest.TestCase):
+    def test_parse_gpu_list(self):
+        text = '0\tAMD Radeon(TM) Graphics\tintegrated\nbroken line\n1\tNVIDIA GeForce RTX 2070 SUPER\tdiscrete\n'
+        self.assertEqual(launcher.parse_gpu_list(text),
+                         [('0', 'AMD Radeon(TM) Graphics', 'integrated'),
+                          ('1', 'NVIDIA GeForce RTX 2070 SUPER', 'discrete')])
+        # Newer tools add the game's multisampling default on that driver and its default GPU.
+        text = '0\tIntel(R) Arc(TM) A750 Graphics\tdiscrete\toff\t1\n1\tllvmpipe\tother\ton\t0\n'
+        self.assertEqual(launcher.parse_gpu_list(text),
+                         [('0', 'Intel(R) Arc(TM) A750 Graphics', 'discrete', 'off', '1'),
+                          ('1', 'llvmpipe', 'other', 'on', '0')])
+        self.assertEqual(launcher.parse_gpu_list(''), [])
+
+    def test_list_gpus_failures_leave_only_automatic(self):
+        import subprocess
+        from unittest import mock
+        with mock.patch.object(launcher, 'find_tool', return_value=None):
+            self.assertEqual(launcher.list_gpus(), [])
+        with mock.patch.object(launcher, 'find_tool', return_value='gow3-gpu-capabilities.exe'):
+            with mock.patch.object(launcher.subprocess, 'run', side_effect=subprocess.TimeoutExpired('x', 5)):
+                self.assertEqual(launcher.list_gpus(), [])
+            with mock.patch.object(launcher.subprocess, 'run', side_effect=OSError):
+                self.assertEqual(launcher.list_gpus(), [])
+            done = mock.Mock(returncode=0, stdout='0\tRX 6700 XT\tdiscrete\n')
+            with mock.patch.object(launcher.subprocess, 'run', return_value=done) as run:
+                self.assertEqual(launcher.list_gpus(), [('0', 'RX 6700 XT', 'discrete')])
+                self.assertEqual(run.call_args.kwargs['timeout'], 5)
+
+    def test_gpu_choice_reaches_the_game(self):
+        from unittest import mock
+        with mock.patch.dict(launcher.os.environ, {'GOW3_GPU_ID': '7'}):
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'game_dir': 'x'})
+            self.assertIsNone(env.get('GOW3_GPU_ID'))  # Automatic wins over an inherited value
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'game_dir': 'x', 'gpu_id': '1'})
+            self.assertEqual(env['GOW3_GPU_ID'], '1')
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'game_dir': 'x', 'gpu_id': 'bad'})
+            self.assertIsNone(env.get('GOW3_GPU_ID'))
+        self.assertEqual(launcher.APP_DEFAULTS['gpu_id'], '')
+
+
+class GameLanguageTest(unittest.TestCase):
+    def test_the_list_follows_the_games_region(self):
+        def ids(region):
+            with mock.patch.object(launcher, 'game_sfo', return_value={'USER_DEFINED_PARAM_1': region}):
+                return [value for value, _text in launcher.game_languages('game')]
+        self.assertEqual(ids(2), ['1', '22', '20', '17'])  # CUSA07671
+        self.assertIn('16', ids(1))  # Polish in CUSA05670 (#38)
+        self.assertNotIn('1', ids(1))
+        all_names = [text for _value, text in launcher.game_languages(None)]
+        self.assertEqual(len(all_names), len(set(all_names)))
+
+    def test_precise_readbacks_are_not_passed_on(self):
+        # GOW3_READBACKS=2 deadlocks at boot (#37): a value saved by 0.2.6 is dropped.
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'readbacks': '2'})
+        self.assertNotEqual(env.get('GOW3_READBACKS'), '2')
+
+
+class MusicTest(unittest.TestCase):
+    def test_songs_are_the_audio_files_in_the_games_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Album').mkdir()
+            for name in ('b.MP3', 'Album/a.flac', 'cover.jpg', 'A_song.ogg'):
+                (root / name).write_bytes(b'')
+            self.assertEqual([p.relative_to(root).as_posix() for p in launcher.music_songs(root)],
+                             ['A_song.ogg', 'Album/a.flac', 'b.MP3'])
+        self.assertEqual(launcher.music_songs(Path(tmp) / 'gone'), [])
+
+    def test_the_music_folder_goes_to_the_game(self):
+        self.assertNotIn('GOW3_MUSIC_DIR', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'music_dir': 'D:/Music'})
+        self.assertEqual(env['GOW3_MUSIC_DIR'], 'D:/Music')
+
+
+class DlssDownloadTest(unittest.TestCase):
+    """NVIDIA's runtime is downloaded on request and kept only when its SHA-256 matches."""
+
+    def opener(self, data):
+        import io
+
+        class Response(io.BytesIO):
+            headers = {'Content-Length': str(len(data))}
+        return lambda request, timeout: Response(data)
+
+    def test_the_file_is_kept_when_it_matches(self):
+        import hashlib
+        import tempfile
+        data = b'nvngx' * 1000
+        with tempfile.TemporaryDirectory() as folder:
+            seen = []
+            target = launcher.download_dlss_runtime(folder, lambda done, total: seen.append((done, total)),
+                                                    sha256=hashlib.sha256(data).hexdigest(),
+                                                    opener=self.opener(data))
+            self.assertEqual(target.read_bytes(), data)
+            self.assertEqual(seen[-1], (len(data), len(data)))
+            self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ['nvngx_dlss.dll'])
+
+    def test_a_different_file_is_refused_and_nothing_stays(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError):
+                launcher.download_dlss_runtime(folder, sha256='0' * 64, opener=self.opener(b'not nvidia'))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_the_pinned_file_is_nvidias(self):
+        self.assertTrue(launcher.DLSS_RUNTIME_URL.startswith('https://raw.githubusercontent.com/NVIDIA/DLSS/v'))
+        self.assertIn(launcher.DLSS_SDK_VERSION, launcher.DLSS_RUNTIME_URL)
+        self.assertEqual(len(launcher.DLSS_RUNTIME_SHA256), 64)
+
+    def test_the_release_builds_the_bridge_from_the_same_sdk(self):
+        # gow3_dlss.dll and the downloaded nvngx_dlss.dll come from the same NVIDIA SDK release.
+        workflow = (ROOT / '.github/workflows/windows-zip.yml').read_text(encoding='utf-8')
+        self.assertIn(f'--branch v{launcher.DLSS_SDK_VERSION} ', workflow)
+        self.assertIn('DLSS_REQUIRED=1', workflow)
+
+    def test_rtx_cards_are_recognized(self):
+        self.assertIs(launcher.rtx_gpu([('0', 'NVIDIA GeForce RTX 4070 Laptop GPU', 'DiscreteGpu')]), True)
+        self.assertIs(launcher.rtx_gpu([('0', 'Quadro RTX 4000', 'DiscreteGpu')]), True)
+        self.assertIs(launcher.rtx_gpu([('0', 'AMD Radeon RX 9070 XT', 'DiscreteGpu'),
+                                        ('1', 'NVIDIA GeForce GTX 1660', 'DiscreteGpu')]), False)
+        self.assertIsNone(launcher.rtx_gpu([]))
+
+
+class QuietStreamTest(unittest.TestCase):
+    def test_a_closed_output_pipe_does_not_stop_the_start(self):
+        class ClosedPipe:
+            def write(self, text):
+                raise OSError(22, 'Invalid argument')
+
+            def flush(self):
+                raise OSError(22, 'Invalid argument')
+
+            def fileno(self):
+                return 7
+        stream = launcher.QuietStream(ClosedPipe())
+        print('Game and update combined from E:/update', file=stream, flush=True)
+        self.assertEqual(stream.fileno(), 7)
+
+
+class TextureQualityTest(unittest.TestCase):
+    def test_texture_limit_reaches_the_game_only_when_lowered(self):
+        # #72, #16: Low and Medium cap the largest textures; Full (default) sets nothing.
+        self.assertEqual([v for v, _t in launcher.TEXTURE_LIMITS], ['', '4096', '2048'])
+        with mock.patch.dict(os.environ, {'GOW3_TEXTURE_LIMIT': '1024'}):
+            self.assertNotIn('GOW3_TEXTURE_LIMIT', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+            low = launcher.game_environment({**launcher.APP_DEFAULTS, 'texture_limit': '2048'})
+        self.assertEqual(low['GOW3_TEXTURE_LIMIT'], '2048')
+
+
+class ReleaseVersionTest(unittest.TestCase):
+    def test_first_wipeout_release(self):
+        self.assertEqual(launcher.VERSION, '0.2.67')
+        self.assertGreater(launcher.version_tuple('windows-v0.2.68'), launcher.version_tuple(launcher.VERSION))
+        self.assertGreater(launcher.version_tuple(launcher.VERSION), launcher.version_tuple('windows-v0.2.55'))
+
+    def test_update_check_is_on_by_default(self):
+        # A new key: the old 'check_updates' was saved off in everyone's settings.
+        self.assertIs(launcher.APP_DEFAULTS['update_popup'], True)
+        self.assertNotIn('check_updates', launcher.APP_DEFAULTS)
+
+    def test_update_check_at_start_retries(self):
+        # Two network failures, then an answer: offered. Three failures: nothing, and no error box.
+        app = types.SimpleNamespace(ui_calls=queue.Queue())
+        for results, offered in (([OSError(), OSError(), ('9.9.9', 'u', 'p', '')], 1), ([OSError()] * 3, 0)):
+            answers = iter(results)
+
+            def release():
+                answer = next(answers)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            with mock.patch.object(launcher, 'latest_release', release), mock.patch.object(launcher.time, 'sleep'):
+                launcher.Launcher.check_update(app)
+            self.assertEqual(app.ui_calls.qsize(), offered)
+            while not app.ui_calls.empty():
+                app.ui_calls.get()
+
+    def test_update_without_its_zip_asks_again(self):
+        # A release offered before its zip was built: UPDATE NOW asks GitHub again and says to
+        # wait, instead of opening the release page (#61).
+        app = types.SimpleNamespace(process=None, messagebox=mock.Mock(), update_progress=mock.Mock())
+        with mock.patch.object(launcher, 'FROZEN', True), mock.patch.object(launcher, 'open_url') as opened,                 mock.patch.object(launcher, 'latest_release', return_value=('9.9.9', None, 'p', '')):
+            launcher.Launcher.install_update(app, '9.9.9', None, 'p')
+        opened.assert_not_called()
+        app.messagebox.showinfo.assert_called_once()
+        app.update_progress.assert_not_called()
+
+    def test_whats_new_is_cut_from_the_release_note(self):
+        body = "## What's new\n\n**Pop-up.** Click `UPDATE NOW`.\n- one\n\n## All features\n\n- everything\n"
+        self.assertEqual(launcher.whats_new(body), 'Pop-up. Click UPDATE NOW.\n- one')
+        self.assertEqual(launcher.whats_new('Just a note.\n## Download\nzip'), 'Just a note.')
+
+    def test_first_start_is_in_english(self):
+        # The translations are partial; 'System' stays a choice in Advanced.
+        self.assertEqual(launcher.APP_DEFAULTS['ui_language'], 'en')
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+class PadStyleTest(unittest.TestCase):
+    """Gamepad names: PlayStation, Xbox, Nintendo (by position) or Keyboard (no gamepad table)."""
+
+    def test_nintendo_names_follow_the_button_positions(self):
+        names = launcher.pad_labels('nintendo')
+        self.assertEqual((names['a'], names['b'], names['x'], names['y']), ('B', 'A', 'Y', 'X'))
+        self.assertEqual(len(set(names.values())), len(names))  # a label maps back to one button
+
+    def test_device_is_its_own_choice(self):
+        self.assertEqual([d for d, _l in launcher.CONTROL_DEVICES], ['keyboard', 'gamepad'])
+        self.assertEqual(list(launcher.PAD_STYLES), ['playstation', 'xbox', 'nintendo'])
+
+    def test_connected_gamepad_skips_a_probe_without_its_dlls(self):
+        on_disk = lambda path: path.name in ('gow3-probe.exe', 'gow3-probe')  # no SDL3.dll anywhere
+        with mock.patch.object(launcher, 'WINDOWS', True), \
+                mock.patch.object(launcher.Path, 'is_file', on_disk), \
+                mock.patch.object(launcher.subprocess, 'run') as run:
+            self.assertIsNone(launcher.connected_gamepad())
+            run.assert_not_called()
+
+    def test_connected_gamepad_reads_the_probe(self):
+        with mock.patch.object(launcher.Path, 'is_file', return_value=True), \
+                mock.patch.object(launcher.subprocess, 'run') as run:
+            run.return_value.stdout = 'Gamepad: type=xbox360 south=a name=Xbox Controller'
+            self.assertTrue(launcher.connected_gamepad())
+            run.return_value.stdout = 'No gamepad'
+            self.assertFalse(launcher.connected_gamepad())
+            run.side_effect = launcher.subprocess.TimeoutExpired('probe', 15)
+            self.assertIsNone(launcher.connected_gamepad())
+
+    def test_nintendo_icons(self):
+        import button_icons
+        self.assertEqual(button_icons.spec('a', 'nintendo')[:2], ('letter', 'B'))
+        self.assertEqual(button_icons.spec('lefttrigger', 'nintendo')[1], 'ZL')

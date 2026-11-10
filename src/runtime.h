@@ -1,0 +1,132 @@
+#ifndef GOW3_RUNTIME_H
+#define GOW3_RUNTIME_H
+#include <stdint.h>
+#include <stddef.h>
+#ifdef _WIN32
+#include "compat_win.h"
+/* No signals on Windows: the exception handler resumes the thread in gow3_longjmp
+ * (gpu/shim/gow3_toggles.h uses the same buffer type). */
+typedef gow3_jmp_buf sigjmp_buf;
+#define sigsetjmp(buffer, save) gow3_setjmp(buffer)
+#else
+#include <setjmp.h>
+#endif
+/* Recovery point for speculative guest memory reads on this thread (probe.c fault handler). */
+extern __thread sigjmp_buf *runtime_fault_recover;
+/* Restarts the game (in-game settings menu, render resolution change). */
+void runtime_restart(void);
+#define ABI __attribute__((sysv_abi))
+typedef void (ABI *GuestCallback)(void);
+void runtime_start(uint64_t capabilities);
+uintptr_t runtime_resolve(const char *name, int is_data);
+void runtime_report(void);
+/* Called at the end of runtime_report (the loader adds its own counters). */
+void runtime_set_report_hook(void (*hook)(void));
+void runtime_finalize(void *dso);
+uintptr_t runtime_mutex_resolve(const char *name);
+void runtime_mutex_report(void);
+uintptr_t runtime_memory_resolve(const char *name);
+void runtime_memory_report(void);
+int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
+const char *runtime_import_name(const char *name);
+uintptr_t runtime_rwlock_resolve(const char *name);
+void runtime_rwlock_report(void);
+void runtime_set_libc_tls(const void *data, uint64_t filesz, uint64_t memsz);
+void runtime_set_module_tls(uint64_t module, const void *data, uint64_t filesz, uint64_t memsz);
+void runtime_set_procparam(void *param);
+void **runtime_application_heap_api(void);
+uintptr_t runtime_thread_resolve(const char *name);
+void runtime_thread_report(void);
+void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align);
+void runtime_thread_attach_main(void);
+int32_t *runtime_errno(void);
+uintptr_t runtime_sema_resolve(const char *name);
+void runtime_sema_report(void);
+unsigned runtime_sema_waiters(uint32_t id);
+uintptr_t runtime_time_resolve(const char *name);
+void runtime_content_configure(const uint32_t values[5]);
+uintptr_t runtime_content_resolve(const char *name);
+void runtime_content_report(void);
+typedef struct { const char *name; void *function; } RuntimeExport;
+#define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
+const char *runtime_symbol(const char *nid);
+uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
+uintptr_t runtime_kernel_resolve(const char *name);
+uintptr_t runtime_file_resolve(const char *name);
+uintptr_t runtime_services_resolve(const char *name);
+void runtime_file_report(void);
+void runtime_file_configure(const char *app0, const char *user);
+int runtime_file_mount(const char *guest, const char *host);
+void runtime_file_unmount(const char *guest);
+int runtime_file_translate(const char *guest, char *out, size_t size);
+int64_t runtime_file_open(const char *path, int flags, int mode);
+int64_t runtime_file_close(int fd);
+int64_t runtime_file_read(int fd, void *buffer, uint64_t size);
+int64_t runtime_file_pread(int fd, void *buffer, uint64_t size, int64_t offset);
+int64_t runtime_file_write(int fd, const void *buffer, uint64_t size);
+int64_t runtime_file_lseek(int fd, int64_t offset, int whence);
+int64_t runtime_file_stat(const char *path, void *guest_stat);
+int64_t runtime_file_fstat(int fd, void *guest_stat);
+int64_t runtime_file_getdents(int fd, char *buffer, uint64_t size, int64_t *base);
+void runtime_thread_keys_cleanup(void);
+/* Guest-visible errno values are FreeBSD's. */
+int32_t runtime_guest_errno(int host_errno);
+void *runtime_low_map(size_t size, int prot);
+/* Windows: reserves the PS4 user address range as a placeholder (no-op elsewhere). */
+void runtime_memory_reserve(void);
+/* Creates the guest memory pool now (charged in full on Windows); 0 on success. Idempotent. */
+int runtime_memory_commit(void);
+uintptr_t runtime_ajm_resolve(const char *name);
+void runtime_ajm_report(void);
+/* AjmDecMp3ParseFrame (guest layout). */
+typedef struct {
+    uint64_t frame_size;
+    uint32_t num_channels, samples_per_channel, bitrate, sample_rate, encoder_delay, num_frames, total_samples, ofl_type;
+} Mp3Frame;
+typedef struct Mp3Decoder Mp3Decoder;
+int runtime_mp3_parse(const unsigned char *data, uint32_t size, int parse_ofl, int layer3_only, Mp3Frame *frame);
+Mp3Decoder *runtime_mp3_open(void);
+void runtime_mp3_close(Mp3Decoder *decoder);
+void runtime_mp3_reset(Mp3Decoder *decoder);
+int runtime_mp3_decode(Mp3Decoder *decoder, const unsigned char *data, int size, float *pcm, int max_samples, int *channels);
+uintptr_t runtime_videodec_resolve(const char *name);
+uintptr_t runtime_audio_resolve(const char *name);
+void runtime_audio_report(void);
+/* Custom soundtrack (runtime_music.c): replaces one buffer of the game's BGM port with the
+ * player's music; 0 = no music files, the game's music plays. */
+int runtime_music_bgm(float *pcm, int frames, int channels);
+/* A game file opened (runtime_file.c): its sound banks tell menus from races (#66). */
+void runtime_music_scene(const char *guest_path);
+uintptr_t runtime_pad_resolve(const char *name);
+void runtime_pad_report(void);
+extern volatile int runtime_pad_opened; /* the game opened a pad (start watch, #113) */
+/* probe --gamepad: prints one "Gamepad:" line for the first pad found (returns 1) or none (0). */
+int runtime_pad_describe(void);
+int runtime_pad_second_user(void);
+void runtime_user_events(void);
+uintptr_t runtime_rtc_resolve(const char *name);
+const char *runtime_file_user_dir(void);
+void runtime_savedata_configure(const char *title);
+uintptr_t runtime_savedata_resolve(const char *name);
+void runtime_savedata_report(void);
+/* gow3: passes WipEout's GPU heap frees to the texture cache; GOW3_HEAP_TRACE=1 reports use. */
+void runtime_heap_trace_install(unsigned char *image, uint64_t size);
+/* OrbisSaveDataParam (1328 bytes) of a save directory of the current title. */
+#define RUNTIME_SAVE_PARAM_SIZE 1328
+int runtime_savedata_param(int32_t user, const char *dir, void *param);
+int runtime_savedata_icon(int32_t user, const char *dir, char *out, size_t size);
+void runtime_thread_attach_host(const char *name);
+/* Offline contracts added for MediEvil and WipEout (runtime_extra.c). */
+uintptr_t runtime_extra_resolve(const char *name);
+void runtime_extra_report(void);
+/* libSceJson2 (runtime_json.c). */
+uintptr_t runtime_json_resolve(const char *name);
+void runtime_json_report(void);
+uintptr_t runtime_fiber_resolve(const char *name);
+void runtime_fiber_report(void);
+/* Name of the fiber running on this thread, or NULL (for crash reports). */
+const char *runtime_fiber_current_name(void);
+const char *runtime_thread_name(void *handle);
+uint64_t runtime_memory_flexible_available(void);
+unsigned char *runtime_image_base(void);
+#endif

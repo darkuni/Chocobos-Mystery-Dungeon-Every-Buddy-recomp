@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Backups of the game's saves: <user>/savedata copied to <user>/savedata_backups/<time>.
+
+run.py makes one before every start; the launcher lists them and restores one. A restore
+first backs up the current saves, so it can always be undone. savedata: the saves' own folder
+when the player chose one (GOW3_SAVEDATA_DIR, #86); the backups stay in the user folder.
+"""
+import datetime
+from pathlib import Path
+import re
+import shutil
+import tempfile
+
+KEEP = 10
+MAX_BYTES = 1 << 30
+STAMP = '%Y%m%d-%H%M%S'
+BACKUP_NAME = re.compile(r'([0-9]{8}-[0-9]{6})(?:-([0-9]+))?')
+PENDING_PREFIX = '.backup-pending-'
+
+
+def backups_dir(user_dir):
+    return Path(user_dir) / 'savedata_backups'
+
+
+def _backup_order(name):
+    match = BACKUP_NAME.fullmatch(name)
+    return (match[1], int(match[2] or 1)) if match else (name, 0)
+
+
+def list_backups(user_dir):
+    """Backup names, newest first."""
+    root = backups_dir(user_dir)
+    return sorted((p.name for p in root.iterdir()
+                   if p.is_dir() and not p.name.startswith(PENDING_PREFIX)),
+                  key=_backup_order, reverse=True) if root.is_dir() else []
+
+
+def _has_saves(savedata):
+    return savedata.is_dir() and any(p.is_file() for p in savedata.rglob('*'))
+
+
+def _prune(user_dir, keep=KEEP):
+    for name in list_backups(user_dir)[keep:]:
+        shutil.rmtree(backups_dir(user_dir) / name, ignore_errors=True)
+
+
+def savedata_dir(user_dir, savedata=None):
+    return Path(savedata) if savedata else Path(user_dir) / 'savedata'
+
+
+def _copy(user_dir, now, savedata=None):
+    savedata = savedata_dir(user_dir, savedata)
+    root = backups_dir(user_dir)
+    source_path, backup_path = savedata.resolve(), root.resolve()
+    if source_path.is_relative_to(backup_path) or backup_path.is_relative_to(source_path):
+        raise ValueError('Savedata and backup folders overlap')
+    if not _has_saves(savedata):
+        return None
+    # WipEout's saves are a few MB. A bigger folder holds something else (#160: 40 GB per
+    # backup), so no copy that could fill the disk.
+    files = [p for p in savedata.rglob('*') if p.is_file() and not p.is_symlink()]
+    if sum(p.stat().st_size for p in files) > MAX_BYTES:
+        biggest = max(files, key=lambda p: p.stat().st_size)
+        raise OSError(f'{savedata} is over {MAX_BYTES >> 20} MB, not copied '
+                      f'(biggest file: {biggest}, {biggest.stat().st_size >> 20} MB)')
+    root.mkdir(parents=True, exist_ok=True)
+    base = (now or datetime.datetime.now()).strftime(STAMP)
+    # Pruning may have removed the unsuffixed folder or left gaps. Keep the
+    # sequence increasing so a fresh backup cannot sort behind older ones.
+    n = 1
+    for entry in root.iterdir():
+        stamp, sequence = _backup_order(entry.name)
+        if stamp == base:
+            n = max(n, sequence + 1)
+    target = root / (base if n == 1 else f'{base}-{n}')
+    staging = Path(tempfile.mkdtemp(prefix=PENDING_PREFIX, dir=root))
+    try:
+        shutil.copytree(savedata, staging, symlinks=True, dirs_exist_ok=True)
+        staging.rename(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return target
+
+
+def backup(user_dir, now=None, keep=KEEP, savedata=None):
+    """Copies savedata; returns the new folder, or None when there is nothing to save."""
+    made = _copy(user_dir, now, savedata)
+    if made:
+        _prune(user_dir, keep)
+    return made
+
+
+def restore(user_dir, name, now=None, savedata=None):
+    """Replaces savedata with backup `name`; returns the backup of the saves it replaced."""
+    if not name or name not in list_backups(user_dir):
+        raise ValueError(f'No save backup named {name!r}')
+    source = backups_dir(user_dir) / name
+    savedata = savedata_dir(user_dir, savedata)
+    # Pruning waits until the copy is done: the restored backup may be the oldest one.
+    safety = _copy(user_dir, now, savedata)
+    savedata.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f'.{savedata.name}.restoring-', dir=savedata.parent))
+    try:
+        shutil.copytree(source, staging, dirs_exist_ok=True)
+        shutil.rmtree(savedata, ignore_errors=True)
+        staging.rename(savedata)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    _prune(user_dir)
+    return safety
+
