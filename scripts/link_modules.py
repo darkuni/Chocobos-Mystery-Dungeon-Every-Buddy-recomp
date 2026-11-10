@@ -30,6 +30,11 @@ def canonical(identity, fallback=None):
 def module(path):
     source = read_self(path)
     elf, header, ph, _, missing = parse_self(source)
+    # Some dumps carry executables whose code is all zeros (the dumper could not decrypt them).
+    for p in ph:
+        if p['type'] == 1 and p['flags'] & 1 and p['filesz'] and not any(span(elf, p['offset'], p['filesz'])):
+            raise ValueError(f'{Path(path).name}: its code is all zeros. This game dump is incomplete '
+                             '(the dumper could not decrypt this file); dump the game again')
     dp = next(p for p in ph if p['type'] == 2)
     dynamic = []
     for pos in range(dp['offset'], dp['offset'] + dp['filesz'], 16):

@@ -230,6 +230,18 @@ static int load_module(const char *path, const char *file, Module *m, uint8_t **
     int r = parse_self(source, size, &m->self, file);
     if (source_out) { *source_out = source; *source_size = size; } else free(source);
     if (r) return -1;
+    /* Some dumps carry executables whose code is all zeros (the dumper could not decrypt them):
+     * say so here instead of crashing in the first call into that code. */
+    for (int i = 0; i < m->self.phnum; ++i) {
+        const Ph *p = &m->self.ph[i];
+        if (p->type != PT_LOAD || !(p->flags & 1) || !p->filesz || p->offset + p->filesz > m->self.elf_size) continue;
+        const uint8_t *code = m->self.elf + p->offset;
+        uint64_t k = 0;
+        while (k < p->filesz && !code[k]) ++k;
+        if (k == p->filesz)
+            return fail("%s: its code is all zeros. This game dump is incomplete (the dumper could not decrypt this "
+                        "file); dump the game again", file);
+    }
     const Ph *dp = find_ph(&m->self, PT_DYNAMIC), *lp = find_ph(&m->self, PT_SCE_DYNLIBDATA);
     if (!dp || !lp) return fail("%s: no dynamic segment", file);
     if (dp->offset + dp->filesz > m->self.elf_size || lp->offset + lp->filesz > m->self.elf_size) return fail("%s: out of bounds", file);

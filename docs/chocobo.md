@@ -12,6 +12,19 @@
 | Engine | Unity 2018.2.14f1, IL2CPP (`PS4Player_Il2cpp.self`) |
 | Middleware | CRIWARE (`cri_ware_unity.prx`: ADX2 audio, Sofdec video) |
 
+## Dump check (first boot, 2026-11-10)
+
+The first test crashed in libc's start, in the first call into the eboot. The dump is the cause:
+in `UP0082-CUSA14219_00-CHOCOBOSDUNGEONE-A0100-V0100.pkg` (SHA-256 above) the code segment of
+`eboot.bin` (22,355,376 bytes) and of `Media/Modules/Il2CppUserAssemblies.prx` (22,704,088 bytes)
+is all zeros, and `sce_discmap.plt` is 98% zeros. The PKG stores those blocks uncompressed and
+every sector is decrypted, so the zeros are in the PKG itself; libc, Fios2, NpToolkit2, PS4Util
+and all four plugins are intact. Typical of a dumper that could not decrypt those SELFs.
+
+Both preparers now refuse a module whose code is all zeros, with a message saying the dump is
+incomplete, instead of crashing later. A good base dump (or an update PKG, which carries its own
+eboot and modules) is needed.
+
 ## Layout
 
 ```
