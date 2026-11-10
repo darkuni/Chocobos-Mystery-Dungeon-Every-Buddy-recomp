@@ -21,12 +21,20 @@ jobs:
         shell: msys2 {0}
     steps:
       # The runner's Git turns LF into CRLF, and the FSR-Vulkan patches then no longer apply.
-      - name: Keep LF line endings
+      # Long paths: this repository's name appears twice in the workspace path, and FSR-Vulkan's
+      # generated shader headers then pass Windows' 260-character limit.
+      - name: Keep LF line endings, allow long paths
         shell: pwsh
-        run: git config --global core.autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # Build from a short path (C:\cb) so the compiler and ninja stay under the limit too.
+      - name: Short build path
+        shell: pwsh
+        run: New-Item -ItemType Junction -Path C:\cb -Target $env:GITHUB_WORKSPACE | Out-Null
       - uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
@@ -39,9 +47,9 @@ jobs:
             sdl3:p fmt:p boost:p robin-map:p xxhash:p ffmpeg:p zydis:p
             spirv-tools:p spirv-headers:p spirv-cross:p
       - name: Build
-        run: bash build.sh
+        run: cd /c/cb && git config --global core.longpaths true && bash build.sh
       - name: Package
-        run: bash packaging/windows/package-chocobo.sh
+        run: cd /c/cb && bash packaging/windows/package-chocobo.sh
       - uses: actions/upload-artifact@v4
         with:
           name: chocobo-win64

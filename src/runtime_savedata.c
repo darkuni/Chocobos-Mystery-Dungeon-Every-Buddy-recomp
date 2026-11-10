@@ -68,8 +68,8 @@ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int initialized;
 static char title_id[16]="UNKNOWN";
 static struct { int used; char host[700], meta[700]; } slots[SLOTS];
-static char memory_path[720];
-static uint64_t memory_size;
+static char memory_path[SLOTS][720];  /* SaveDataMemory (slot 0) and SaveDataMemory2 slots */
+static uint64_t memory_size[SLOTS];
 static size_t mounts_done, memory_writes;
 
 void runtime_savedata_configure(const char *title) {
@@ -334,43 +334,57 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
     free(entries);
     return 0;
 }
-/* SaveDataMemory: one fixed-size blob per user/title. */
-static ABI int32_t memory_setup(int32_t user, uint64_t size, const Param *param) {
+/* SaveDataMemory: one fixed-size blob per user/title and slot (memory.dat, memory<slot>.dat). */
+static int32_t memory_setup_slot(int32_t user, uint32_t slot, uint64_t size, const Param *param, const Icon *icon,
+                                 uint64_t *existed) {
     if (!initialized) return ERR_NOT_INITIALIZED;
-    if (!size) return ERR_PARAMETER;
+    if (!size || slot>=SLOTS) return ERR_PARAMETER;
     char base[600], dir[640], path[720];
     root(user,NULL,base,sizeof(base));
     snprintf(dir,sizeof(dir),"%s.memory",base);
     if (make_dirs(dir)) return ERR_INTERNAL;
     pthread_mutex_lock(&lock);
-    snprintf(path,sizeof(path),"%s/memory.dat",dir);
+    if (slot) snprintf(path,sizeof(path),"%s/memory%u.dat",dir,slot);
+    else snprintf(path,sizeof(path),"%s/memory.dat",dir);
     FILE *f=fopen(path,"r+b");
     if (!f) f=fopen(path,"w+b");
     int32_t r=ERR_INTERNAL;
+    long length=-1;
     if (f) {
         if (fseek(f,0,SEEK_END)) goto done;
-        long length=ftell(f);
+        length=ftell(f);
         if (length<0 || ((uint64_t)length<size && ftruncate(fileno(f),(off_t)size))) goto done;
         r=0;
     done:
         if (fclose(f)) r=ERR_INTERNAL;
     }
-    if (!r && param && write_param(dir,param)) r=ERR_INTERNAL;
+    if (existed) *existed=length>0 ? (uint64_t)length : 0;
+    /* A new blob gets the game's param and icon; an existing one keeps its own. */
+    if (!r && param && length<=0 && write_param(dir,param)) r=ERR_INTERNAL;
+    if (!r && icon && icon->buffer && icon->data_size && length<=0) {
+        char icon_path[740]; snprintf(icon_path,sizeof(icon_path),"%s/icon0.png",dir);
+        FILE *g=fopen(icon_path,"wb");
+        if (g) { fwrite(icon->buffer,1,icon->data_size,g); fclose(g); }
+    }
     if (!r) {
-        snprintf(memory_path,sizeof(memory_path),"%s",path);
-        memory_size=size;
+        snprintf(memory_path[slot],sizeof(memory_path[slot]),"%s",path);
+        memory_size[slot]=size;
     }
     pthread_mutex_unlock(&lock);
-    if (!r) printf("Runtime: save data memory ready (%llu bytes)\n",(unsigned long long)size);
+    if (!r) printf("Runtime: save data memory slot %u ready (%llu bytes, %s)\n",slot,(unsigned long long)size,
+                   length>0 ? "existing" : "new");
     return r;
 }
-static int32_t memory_io(void *buffer, uint64_t size, int64_t offset, int write) {
+static ABI int32_t memory_setup(int32_t user, uint64_t size, const Param *param) {
+    return memory_setup_slot(user,0,size,param,NULL,NULL);
+}
+static int32_t memory_io(uint32_t slot, void *buffer, uint64_t size, int64_t offset, int write) {
     if (!initialized) return ERR_NOT_INITIALIZED;
-    if (!buffer || offset<0) return ERR_PARAMETER;
+    if (!buffer || offset<0 || slot>=SLOTS) return ERR_PARAMETER;
     pthread_mutex_lock(&lock);
-    if (!memory_size) { pthread_mutex_unlock(&lock); return ERR_MEMORY_NOT_READY; }
-    if ((uint64_t)offset+size>memory_size) { pthread_mutex_unlock(&lock); return ERR_PARAMETER; }
-    FILE *f=fopen(memory_path,"r+b");
+    if (!memory_size[slot]) { pthread_mutex_unlock(&lock); return ERR_MEMORY_NOT_READY; }
+    if ((uint64_t)offset+size>memory_size[slot]) { pthread_mutex_unlock(&lock); return ERR_PARAMETER; }
+    FILE *f=fopen(memory_path[slot],"r+b");
     int32_t r=ERR_INTERNAL;
     if (f && !fseek(f,offset,SEEK_SET) &&
         (write ? fwrite(buffer,1,size,f) : fread(buffer,1,size,f))==size) r=0;
@@ -379,8 +393,178 @@ static int32_t memory_io(void *buffer, uint64_t size, int64_t offset, int write)
     pthread_mutex_unlock(&lock);
     return r;
 }
-static ABI int32_t memory_get(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,0); }
-static ABI int32_t memory_set(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,1); }
+static ABI int32_t memory_get(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(0,buffer,size,offset,0); }
+static ABI int32_t memory_set(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(0,buffer,size,offset,1); }
+
+/* SaveDataMemory2 (SDK 4.50+; slots from 5.00). Layouts as in shadPS4 savedata.cpp. */
+typedef struct { void *buffer; uint64_t size; int64_t offset; uint8_t reserved[40]; } MemoryData;
+typedef struct { uint32_t option; int32_t user; uint64_t memory_size, icon_size; const Param *param; const Icon *icon;
+                 uint32_t slot; uint8_t reserved[20]; } MemorySetup2;
+typedef struct { uint64_t existed; uint8_t reserved[16]; } MemorySetupResult;
+typedef struct { int32_t user; uint8_t pad[4]; MemoryData *data; Param *param; Icon *icon; uint32_t slot; uint8_t reserved[28]; } MemoryGet2;
+typedef struct { int32_t user; uint8_t pad[4]; const MemoryData *data; const Param *param; const Icon *icon;
+                 uint32_t count, slot; uint8_t reserved[32]; } MemorySet2;
+typedef struct { int32_t user; uint32_t slot, option; uint8_t reserved[28]; } MemorySync;
+_Static_assert(sizeof(MemoryData)==64 && sizeof(MemorySetup2)==64 && sizeof(MemoryGet2)==64 && sizeof(MemorySet2)==72 &&
+               sizeof(MemorySync)==40,"SaveDataMemory2 layouts");
+
+/* Results of backups and memory syncs, for sceSaveDataGetEventResult. Saves are written straight
+ * to disk, so every request has finished by the time it returns. */
+typedef struct { uint32_t type; int32_t error; int32_t user; uint8_t pad[4]; TitleId title; DirName dir; uint8_t reserved[40]; } Event;
+_Static_assert(sizeof(Event)==104,"OrbisSaveDataEvent layout");
+static Event events[16];
+static size_t event_count;
+static void post_event(uint32_t type, int32_t user, const char *dir) {
+    pthread_mutex_lock(&lock);
+    if (event_count==sizeof(events)/sizeof(*events)) { memmove(events,events+1,sizeof(events)-sizeof(*events)); --event_count; }
+    Event *e=&events[event_count++];
+    memset(e,0,sizeof(*e));
+    e->type=type; e->user=user;
+    snprintf(e->title.data,sizeof(e->title.data),"%.9s",title_id);
+    if (dir) snprintf(e->dir.data,sizeof(e->dir.data),"%.31s",dir);
+    pthread_mutex_unlock(&lock);
+}
+static ABI int32_t memory_setup2(const MemorySetup2 *setup, MemorySetupResult *result) {
+    if (!setup) return ERR_PARAMETER;
+    uint64_t existed=0;
+    int32_t r=memory_setup_slot(setup->user,setup->slot,setup->memory_size,setup->param,setup->icon,&existed);
+    if (!r && result) { memset(result,0,sizeof(*result)); result->existed=existed; }
+    return r;
+}
+static int read_file_into(const char *path, void *buffer, uint64_t capacity, uint64_t *size) {
+    FILE *f=fopen(path,"rb");
+    if (!f) return -1;
+    *size=fread(buffer,1,capacity,f);
+    fclose(f);
+    return 0;
+}
+static void memory_dir(int32_t user, char *out, size_t size) {
+    char base[600]; root(user,NULL,base,sizeof(base));
+    snprintf(out,size,"%s.memory",base);
+}
+static ABI int32_t memory_get2(const MemoryGet2 *get) {
+    if (!get) return ERR_PARAMETER;
+    if (get->data) {
+        int32_t r=memory_io(get->slot,get->data->buffer,get->data->size,get->data->offset,0);
+        if (r) return r;
+    } else if (get->slot>=SLOTS || !memory_size[get->slot]) return initialized ? ERR_MEMORY_NOT_READY : ERR_NOT_INITIALIZED;
+    char dir[640]; memory_dir(get->user,dir,sizeof(dir));
+    if (get->param && read_param(dir,get->param)) memset(get->param,0,sizeof(*get->param));
+    if (get->icon && get->icon->buffer) {
+        char path[700]; snprintf(path,sizeof(path),"%s/icon0.png",dir);
+        uint64_t n=0;
+        Icon *icon=get->icon;
+        if (read_file_into(path,(void *)icon->buffer,icon->buffer_size,&n)) n=0;
+        icon->data_size=n;
+    }
+    return 0;
+}
+static ABI int32_t memory_set2(const MemorySet2 *set) {
+    if (!set) return ERR_PARAMETER;
+    for (uint32_t i=0;set->data && i<(set->count ? set->count : 1);++i) {
+        int32_t r=memory_io(set->slot,set->data[i].buffer,set->data[i].size,set->data[i].offset,1);
+        if (r) return r;
+    }
+    if (!set->data && (set->slot>=SLOTS || !memory_size[set->slot])) return initialized ? ERR_MEMORY_NOT_READY : ERR_NOT_INITIALIZED;
+    char dir[640]; memory_dir(set->user,dir,sizeof(dir));
+    if (set->param && write_param(dir,set->param)) return ERR_INTERNAL;
+    if (set->icon && set->icon->buffer && set->icon->data_size) {
+        char path[700]; snprintf(path,sizeof(path),"%s/icon0.png",dir);
+        FILE *f=fopen(path,"wb");
+        if (!f) return ERR_INTERNAL;
+        fwrite(set->icon->buffer,1,set->icon->data_size,f);
+        fclose(f);
+    }
+    return 0;
+}
+static ABI int32_t memory_sync(const MemorySync *sync) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!sync) return ERR_PARAMETER;
+    if (sync->slot>=SLOTS || !memory_size[sync->slot]) return ERR_MEMORY_NOT_READY;
+    post_event(3 /* SAVE_DATA_MEMORY_SYNC */,sync->user,"sce_sdmemory");
+    return 0;
+}
+
+/* ---- Calls of Unity's SaveData plugin ---- */
+typedef struct { int32_t user; int32_t pad; const TitleId *title; const DirName *dir; const void *fingerprint; uint8_t reserved[32]; } Backup;
+typedef struct { uint64_t blocks, free_blocks; uint8_t reserved[32]; } MountInfo;
+static ABI int32_t save_backup(const Backup *b) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!b || !b->dir) return ERR_PARAMETER;
+    post_event(2 /* BACKUP */,b->user,b->dir->data);
+    return 0;
+}
+static ABI int32_t save_event_result(const void *param, Event *event) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!event || param) return ERR_PARAMETER;
+    pthread_mutex_lock(&lock);
+    int32_t r=ERR_NOT_FOUND;
+    if (event_count) {
+        *event=events[0];
+        memmove(events,events+1,(event_count-1)*sizeof(*events));
+        --event_count;
+        r=0;
+    }
+    pthread_mutex_unlock(&lock);
+    return r;
+}
+static ABI int32_t save_mount_info(const MountPoint *point, MountInfo *info) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!point || !info) return ERR_PARAMETER;
+    pthread_mutex_lock(&lock);
+    int slot=slot_of(point);
+    pthread_mutex_unlock(&lock);
+    if (slot<0) return ERR_NOT_MOUNTED;
+    memset(info,0,sizeof(*info));
+    info->blocks=32768; info->free_blocks=16384; /* as dir name search reports */
+    return 0;
+}
+static ABI int32_t save_get_param(const MountPoint *point, uint32_t type, void *buffer, uint64_t size, uint64_t *got) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (type>5 || !buffer) return ERR_PARAMETER;
+    pthread_mutex_lock(&lock);
+    int slot=slot_of(point);
+    Param p;
+    int missing=slot<0 ? 1 : read_param(slots[slot].meta,&p);
+    pthread_mutex_unlock(&lock);
+    if (slot<0) return ERR_NOT_MOUNTED;
+    if (missing) memset(&p,0,sizeof(p));
+    const void *from=NULL; uint64_t n=0;
+    switch (type) {
+    case 0: from=&p; n=sizeof(p); break;
+    case 1: from=p.title; n=strnlen(p.title,sizeof(p.title))+1; break;
+    case 2: from=p.subtitle; n=strnlen(p.subtitle,sizeof(p.subtitle))+1; break;
+    case 3: from=p.detail; n=strnlen(p.detail,sizeof(p.detail))+1; break;
+    case 4: from=&p.user_param; n=4; break;
+    case 5: from=&p.mtime; n=8; break;
+    }
+    if (n>size) n=size;
+    memcpy(buffer,from,n);
+    if (got) *got=n;
+    return 0;
+}
+static ABI int32_t save_load_icon(const MountPoint *point, Icon *icon) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!point || !icon || !icon->buffer) return ERR_PARAMETER;
+    pthread_mutex_lock(&lock);
+    int slot=slot_of(point);
+    char path[720];
+    if (slot>=0) snprintf(path,sizeof(path),"%s/icon0.png",slots[slot].meta);
+    pthread_mutex_unlock(&lock);
+    if (slot<0) return ERR_NOT_MOUNTED;
+    uint64_t n=0;
+    if (read_file_into(path,(void *)icon->buffer,icon->buffer_size,&n)) return ERR_NOT_FOUND;
+    icon->data_size=n;
+    return 0;
+}
+static ABI int32_t save_progress(float *progress) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!progress) return ERR_PARAMETER;
+    *progress=1.0f;
+    return 0;
+}
+static ABI int32_t save_clear_progress(void) { return initialized ? 0 : ERR_NOT_INITIALIZED; }
+static ABI int32_t save_dialog_progress_inc(uint32_t target, uint32_t delta) { (void)target; (void)delta; return 0; }
 
 static const RuntimeExport exports[]={
     {"sceSaveDataInitialize",save_initialize}, {"sceSaveDataInitialize2",save_initialize},
@@ -394,6 +578,12 @@ static const RuntimeExport exports[]={
     {"sceSaveDataDirNameSearch",save_search},
     {"sceSaveDataSetupSaveDataMemory",memory_setup}, {"sceSaveDataGetSaveDataMemory",memory_get},
     {"sceSaveDataSetSaveDataMemory",memory_set},
+    {"sceSaveDataSetupSaveDataMemory2",memory_setup2}, {"sceSaveDataGetSaveDataMemory2",memory_get2},
+    {"sceSaveDataSetSaveDataMemory2",memory_set2}, {"sceSaveDataSyncSaveDataMemory",memory_sync},
+    {"sceSaveDataBackup",save_backup}, {"sceSaveDataGetEventResult",save_event_result},
+    {"sceSaveDataGetMountInfo",save_mount_info}, {"sceSaveDataGetParam",save_get_param},
+    {"sceSaveDataLoadIcon",save_load_icon}, {"sceSaveDataGetProgress",save_progress},
+    {"sceSaveDataClearProgress",save_clear_progress}, {"sceSaveDataDialogProgressBarInc",save_dialog_progress_inc},
 };
 uintptr_t runtime_savedata_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
 void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }

@@ -7,9 +7,9 @@ IL2CPP) for Windows and Linux / SteamOS, built on the runtime of
 runtime replaces the PS4 system libraries, and the graphics are translated to Vulkan by the
 shadPS4 video core. There is no CPU emulator.
 
-> **Status: early work. Not playable.** The game's modules link; the Unity plugins
-> (CRIWARE audio/video, save data) and about 77 system functions are still to do.
-> Details: [docs/chocobo.md](docs/chocobo.md).
+> **Status: early work, first boot test pending.** The game, the IL2CPP code and the Unity plugins
+> (CRIWARE, SaveData, NpToolkit) link into one image; plugins are found by name at run time and
+> every PS4 function the game imports has an answer. Details: [docs/chocobo.md](docs/chocobo.md).
 
 No game files are included. You need your own copy for PS4 (CUSA14219) as a fake PKG.
 
@@ -56,6 +56,7 @@ Linux (Ubuntu 24.04): `bash packaging/linux/ci-deps.sh`, `bash build.sh`,
 | Preparation | `src/boot_prepare.c` | Reads `eboot.bin` and links the game's own `libc` and `libSceFios2`; the C version of `scripts/prepare.py`, `link_modules.py`, `function_starts.py`, `content_profile.py` (same output, byte for byte) |
 | Import names | `scripts/gen_import_names.py`, `src/import_names.inc` | Maps the game's import NIDs to function names |
 | Loader | `src/probe.c` | Loads the image and starts the game's original code |
+| Plugins | `src/dynlib.c` | sceKernelLoadStartModule / sceKernelDlsym for the linked Unity plugins |
 | Runtime | `src/runtime_*.c` | PS4 system functions |
 | Audio3d | `src/runtime_audio.c` | Mixes the bed and the sound objects of the Wwise sink into one output |
 | Json2 | `src/runtime_json.c` | sce::Json values, parser and serializer |

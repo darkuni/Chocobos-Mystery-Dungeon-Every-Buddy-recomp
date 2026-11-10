@@ -181,7 +181,9 @@ static ABI int32_t get_argc(void) { return 1; }
 static ABI const char **get_argv(void) { return guest_argv; }
 /* Only the game and its bundled modules exist; nothing was loaded at run time. */
 static ABI int32_t stop_unload_module(int32_t handle,uint64_t args,const void *argp,uint32_t flags,const void *opt,int32_t *result) {
-    (void)args; (void)argp; (void)flags; (void)opt; (void)result;
+    (void)args; (void)argp; (void)flags; (void)opt;
+    /* Plugins handed out by dynlib.c (handles 0x1000+) stay linked; unloading is a no-op. */
+    if (runtime_dynlib_load_hook && handle>=0x1000 && handle<0x1010) { if (result) *result=0; return 0; }
     printf("Runtime: sceKernelStopUnloadModule(%d): no such module\n",handle);
     return ERR(3); /* ESRCH */
 }

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from link_modules import module  # noqa: E402
+from link_modules import module, module_path  # noqa: E402
 
 INC = Path(__file__).resolve().parent.parent / 'src' / 'import_names.inc'
 
@@ -23,7 +23,7 @@ def main():
     text = INC.read_text()
     known = set(re.findall(r'\{"([^"]+)"', text))
     added = []
-    for path in [game / 'eboot.bin'] + [game / 'sce_module' / m for m in extra]:
+    for path in [game / 'eboot.bin'] + [module_path(game, m) for m in extra]:
         for s in module(path)['symbols']:
             if s['section'] or not s['identity']:
                 continue

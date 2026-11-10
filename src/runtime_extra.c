@@ -483,13 +483,26 @@ static ABI int32_t voiceqos_read(int32_t connection, void *data, uint32_t *size)
     return 0;
 }
 
-/* ---- Dynamic modules: everything the game needs is linked up front ---- */
+/* ---- Dynamic modules: everything the game needs is linked up front ----
+ * Modules the game opens itself (Unity's Media/Plugins) are linked too; dynlib.c, set up by the
+ * probe, maps their names to handles and their exports by name. Without it nothing loads. */
+int32_t (*runtime_dynlib_load_hook)(const char *path);
+uintptr_t (*runtime_dynlib_sym_hook)(int32_t handle, const char *name);
 static ABI int32_t load_start_module(const char *path, uint64_t argc, const void *argv, uint32_t flags,
                                      const void *option, int32_t *result) {
     (void)argc; (void)argv; (void)flags; (void)option;
-    printf("Runtime: sceKernelLoadStartModule(%s) -> not available\n",path ? path : "(null)");
+    int32_t handle=runtime_dynlib_load_hook && path ? runtime_dynlib_load_hook(path) : -1;
     if (result) *result=0;
+    if (handle>=0) return handle;
+    printf("Runtime: sceKernelLoadStartModule(%s) -> not available\n",path ? path : "(null)");
     return ERR(2); /* ENOENT */
+}
+static ABI int32_t kernel_dlsym(int32_t handle, const char *symbol, void **address) {
+    if (!symbol || !address) return ERR(E_INVAL);
+    uintptr_t found=runtime_dynlib_sym_hook ? runtime_dynlib_sym_hook(handle,symbol) : 0;
+    if (!found) return ERR(E_SRCH);
+    *address=(void *)found;
+    return 0;
 }
 static ABI int32_t posix_fcntl(int32_t fd, int32_t cmd, int64_t arg) {
     (void)fd; (void)arg;
@@ -530,7 +543,7 @@ static ABI __attribute__((noreturn)) void load_exec(const char *path, const void
 }
 
 static const RuntimeExport exports[]={
-    {"sceKernelLoadStartModule",load_start_module}, {"sceKernelDlsym",not_found},
+    {"sceKernelLoadStartModule",load_start_module}, {"sceKernelDlsym",kernel_dlsym},
     {"fcntl",posix_fcntl}, {"pthread_cancel",posix_cancel},
     {"sceHttpGetLastErrno",http_last_errno}, {"sceHttpAbortRequest",ok_noop},
     {"sceHttpGetAllResponseHeaders",http_network}, {"sceHttpGetMemoryPoolStats",http_network},

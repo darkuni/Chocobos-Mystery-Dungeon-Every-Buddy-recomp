@@ -89,7 +89,7 @@ if [[ ! -f out/libatrac9.a || -n $(find third_party/LibAtrac9/C/src -newer out/l
 fi
 # isa_emulate runs inside guest code: no XMM/YMM.
 "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -mgeneral-regs-only -c src/isa_emulate.c -o out/isa_emulate.o
-"$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -no-pie "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/bootstrap.c src/boot_pkg.c src/boot_prepare.c src/boot_util.c src/boot_crypto.c src/cpu_check.c src/vulkan_smoke.c out/isa_emulate.o src/isa_rewrite.c out/libatrac9.a -lm -lz "${gpu[@]}" "${libraries[@]}" -o out/gow3-probe
+"$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -no-pie "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/bootstrap.c src/dynlib.c src/boot_pkg.c src/boot_prepare.c src/boot_util.c src/boot_crypto.c src/cpu_check.c src/vulkan_smoke.c out/isa_emulate.o src/isa_rewrite.c out/libatrac9.a -lm -lz "${gpu[@]}" "${libraries[@]}" -o out/gow3-probe
 echo "Built $PWD/out/gow3-probe"
 # The match server of online play on its own (the game hosts one too, GOW3_NET_HOST=1).
 "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tools/gow3_server.c src/runtime_matchserver.c src/runtime_wire.c -o out/gow3-server

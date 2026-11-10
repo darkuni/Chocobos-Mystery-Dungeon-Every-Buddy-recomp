@@ -8,7 +8,7 @@ function (host contracts first) and otherwise binds the native export.
 Exports are matched by (NID, library identity, module identity). Imports of
 libSceLibcInternal are served by libc.prx's same-NID exports: the internal
 library is not shipped with the game and exposes the same functions.
-Output: out/boot-linked.bin (format G3PROBE5) and out/link.json.
+Output: out/boot-linked.bin (format G3PROBE5), out/modules.txt and out/link.json.
 """
 import collections
 import hashlib
@@ -253,6 +253,9 @@ def link(game, out, module_names=DEFAULT_MODULES, reserve=0):
                   bindings=len(bindings), imports=len(names), fs_loads_patched=fs_patched,
                   main_tls=dict(zip(('vaddr', 'filesz', 'memsz', 'align'), main_tls_values)),
                   unresolved_imports=unresolved, reserve=reserved)
+    # modules.txt: the linked module names in table order, for sceKernelLoadStartModule /
+    # sceKernelDlsym at run time (runtime_dynlib.c). Same file as boot_prepare.c.
+    (out / 'modules.txt').write_bytes(''.join(f'{t["file"]}\n' for t in table).encode())
     (out / 'link.json').write_text(json.dumps(report, indent=2) + '\n')
     summary = ', '.join(f"{t['file']}@{t['base']:#x}" for t in table)
     print(f'Linked modules: {summary}; {len(bindings)} native bindings, {len(unresolved)} imports left to the host runtime, '

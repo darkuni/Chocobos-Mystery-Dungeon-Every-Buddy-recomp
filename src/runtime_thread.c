@@ -393,6 +393,41 @@ static ABI int32_t posix_create(GuestThread **t,ThreadAttr **a,GuestEntry e,void
 static ABI int32_t posix_create_name(GuestThread **t,ThreadAttr **a,GuestEntry e,void *arg,const char *name) { return posix(create(t,a,e,arg,name)); }
 static ABI int32_t posix_join(GuestThread *t,void **r) { return posix(thread_join(t,r)); }
 
+/* Unity (Chocobo's Mystery Dungeon EVERY BUDDY!) */
+static ABI int32_t thread_get_schedparam(GuestThread *t,int *policy,SchedParam *param) {
+    if (!find_thread(t)) return ERR(3);
+    if (!policy || !param) return ERR(22);
+    *policy=t->attr.policy; param->priority=t->attr.prio; return 0;
+}
+/* Stacks are the host's: no guest-visible address, the size the game asked for. */
+static ABI int32_t attr_get_stack_full(ThreadAttr **slot,void **address,uint64_t *size) {
+    ThreadAttr *a=find_attr(slot);
+    if (!a || !address || !size) return ERR(22);
+    *address=NULL; *size=a->stack; return 0;
+}
+static ABI int32_t attr_get_stack_address(ThreadAttr **slot,void **address) {
+    if (!find_attr(slot) || !address) return ERR(22);
+    *address=NULL; return 0;
+}
+static ABI int32_t posix_detach(GuestThread *t) { return posix(thread_detach(t)); }
+static ABI int32_t posix_equal(GuestThread *a,GuestThread *b) { return a==b; }
+static ABI int32_t posix_set_cancel_state(int state,int *old) { (void)state; if (old) *old=0; return 0; }
+/* pthread_cleanup_push/pop: the records live in the caller's frame (struct _pthread_cleanup_info,
+ * 64 bytes on FreeBSD); this thread's stack of them is linked through the first three words. */
+typedef void (ABI *CleanupRoutine)(void *);
+typedef struct Cleanup { CleanupRoutine routine; void *argument; struct Cleanup *previous; } Cleanup;
+static _Thread_local Cleanup *cleanups;
+static ABI void cleanup_push(CleanupRoutine routine,void *argument,Cleanup *info) {
+    if (!info) return;
+    info->routine=routine; info->argument=argument; info->previous=cleanups; cleanups=info;
+}
+static ABI void cleanup_pop(int execute) {
+    Cleanup *c=cleanups;
+    if (!c) return;
+    cleanups=c->previous;
+    if (execute && c->routine) c->routine(c->argument);
+}
+
 uintptr_t runtime_thread_resolve(const char *name) {
     static const struct { const char *nid; void *fn; } table[]={
         {"aI+OeCz8xrQ#libkernel",thread_self}, {"EotR8a3ASf4#libkernel",thread_self},
@@ -414,6 +449,10 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"euKRgm0Vn2M#libkernel",posix_attr_set_param}, {"OxhIB8LB-PQ#libkernel",posix_create},
         {"Jmi+9w9u0E4#libkernel",posix_create_name}, {"h9CcP3J0oVM#libkernel",posix_join},
         {"FJrT5LuUBAU#libkernel",thread_exit},
+        {"P41kTWUS3EI#libkernel",thread_get_schedparam}, {"-quPa4SEJUw#libkernel",attr_get_stack_full},
+        {"Ru36fiTtJzA#libkernel",attr_get_stack_address}, {"+U1R4WtXvoc#libkernel",posix_detach},
+        {"7Xl257M4VNI#libkernel",posix_equal}, {"lZzFeSxPl08#libkernel",posix_set_cancel_state},
+        {"1xvtUVx1-Sg#libkernel",cleanup_push}, {"iWsFlYMf3Kw#libkernel",cleanup_pop},
     };
     for (size_t i=0;i<sizeof(table)/sizeof(*table);++i)
         if (!strcmp(name,table[i].nid)) return (uintptr_t)table[i].fn;

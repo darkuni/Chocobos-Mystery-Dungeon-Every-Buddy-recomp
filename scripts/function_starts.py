@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 from prepare import parse_self  # noqa: E402
-from link_modules import DEFAULT_MODULES  # noqa: E402
+from link_modules import DEFAULT_MODULES, module_path  # noqa: E402
 
 PT_LOAD, PT_GNU_EH_FRAME = 1, 0x6474e550
 
@@ -53,7 +53,9 @@ def function_starts(elf, ph, base):
     data = elf[hdr['offset']:hdr['offset'] + hdr['filesz']]
     version, frame_encoding, count_encoding, table_encoding = data[:4]
     if version != 1 or table_encoding == 0xff:
-        raise ValueError('no .eh_frame_hdr search table')
+        # Some Unity plugins ship .eh_frame_hdr without the search table: no starts from them
+        # (their red zones stay unprotected), the same as a module without .eh_frame_hdr.
+        return []
     address = hdr['vaddr']
     pos = 4
     _, pos = read_encoded(data, pos, frame_encoding, address)
@@ -91,7 +93,7 @@ def main():
     if len(bases) != len(args.modules):
         raise ValueError(f'{len(bases)} linked modules, expected {len(args.modules)}')
     for name, base in zip(args.modules, bases):
-        elf, _, ph, _, _ = parse_self((args.game / 'sce_module' / name).read_bytes())
+        elf, _, ph, _, _ = parse_self(module_path(args.game, name).read_bytes())
         starts += function_starts(elf, ph, base)
     starts = sorted(set(starts))
     with (args.out / 'functions.bin').open('wb') as f:

@@ -307,6 +307,22 @@ static int sym_index(const Module *m, uint32_t index, const Sym **out) {
     return 0;
 }
 
+/* Exported functions and data of a PRX (the same set link_modules.py binds), for sceKernelDlsym:
+ * fn(ctx, NID, module-relative address) once per export. 0 on success. */
+int boot_module_exports(const char *path, void (*fn)(void *ctx, const char *nid, uint64_t value), void *ctx) {
+    Module m;
+    const char *file = strrchr(path, '/');
+    file = file ? file + 1 : path;
+    if (load_module(path, file, &m, NULL, NULL)) { free_module(&m); return -1; }
+    for (size_t i = 0; i < m.nsyms; ++i) {
+        const Sym *y = &m.syms[i];
+        if (y->section && (y->binding == 1 || y->binding == 2) && y->identity.valid && (y->type == 1 || y->type == 2))
+            fn(ctx, y->identity.nid, y->value);
+    }
+    free_module(&m);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- prepare.py inspect_libc */
 static int libc_init_env_is_ret(const char *path, int *is_ret) {
     *is_ret = 0;
@@ -643,6 +659,15 @@ static int link_modules(const Module *main, const char *game, const char *const 
                    || boot_write_file(tmp, f.data, f.size) || boot_rename(tmp, path)))
             r = fail("cannot write %s/boot-linked.bin", out_dir);
         free(f.data);
+        /* modules.txt: the linked module names in table order, for sceKernelLoadStartModule /
+         * sceKernelDlsym at run time (runtime_dynlib.c). Same file as link_modules.py. */
+        if (!r) {
+            Buf t = {0};
+            for (size_t i = 0; !r && i < *ntable; ++i) r = buf_put(&t, modules[i], strlen(modules[i])) || buf_put(&t, "\n", 1);
+            if (!r && (!boot_path(path, sizeof(path), "%s/modules.txt", out_dir) || boot_write_file(path, t.data, t.size)))
+                r = fail("cannot write %s/modules.txt", out_dir);
+            free(t.data);
+        }
         if (!r) {
             printf("Linked modules: ");
             for (size_t i = 0; i < *ntable; ++i) printf("%s%s@%#" PRIx64, i ? ", " : "", modules[i], table[i].base);
@@ -680,7 +705,9 @@ static int function_starts(const Self *s, uint64_t base, Starts *out) {
     if (hdr->offset + hdr->filesz > s->elf_size || hdr->filesz < 4) return fail("bad .eh_frame_hdr");
     const uint8_t *data = s->elf + hdr->offset;
     size_t size = (size_t)hdr->filesz, pos = 4;
-    if (data[0] != 1 || data[3] == 0xff) return fail("no .eh_frame_hdr search table");
+    /* Some Unity plugins ship .eh_frame_hdr without the search table: no starts from them
+     * (function_starts.py does the same). */
+    if (data[0] != 1 || data[3] == 0xff) return 0;
     int64_t ignored, count;
     if (read_encoded(data, size, &pos, data[1], hdr->vaddr, &ignored) || read_encoded(data, size, &pos, data[2], hdr->vaddr, &count)) return -1;
     for (int64_t i = 0; i < count; ++i) {

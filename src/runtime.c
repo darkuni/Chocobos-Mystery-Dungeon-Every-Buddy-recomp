@@ -21,8 +21,8 @@ static uint64_t capabilities;
 static _Atomic size_t guards_acquired, guards_released;
 static uint64_t stack_canary;
 static _Atomic size_t memory_calls;
-/* Dynamic TLS of linked modules: module IDs 2..7 (1 is the eboot's static TLS). */
-#define TLS_MODULES 8
+/* Dynamic TLS of linked modules: module IDs 2..16 (1 is the eboot's static TLS). */
+#define TLS_MODULES 17
 static struct { const void *data; uint64_t filesz, memsz; } tls_modules[TLS_MODULES];
 static _Thread_local unsigned char *tls_blocks[TLS_MODULES];
 static void *process_param;
@@ -262,6 +262,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (ajm) return ajm;
     uintptr_t videodec = runtime_videodec_resolve(name);
     if (videodec) return videodec;
+    uintptr_t videodec2 = runtime_videodec2_resolve(name);
+    if (videodec2) return videodec2;
     uintptr_t audio = runtime_audio_resolve(name);
     if (audio) return audio;
     uintptr_t pad = runtime_pad_resolve(name);
@@ -274,6 +276,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (file) return file;
     uintptr_t extra = runtime_extra_resolve(name);
     if (extra) return extra;
+    uintptr_t unity = runtime_unity_resolve(name);
+    if (unity) return unity;
     uintptr_t json = runtime_json_resolve(name);
     if (json) return json;
     uintptr_t fiber = runtime_fiber_resolve(name);

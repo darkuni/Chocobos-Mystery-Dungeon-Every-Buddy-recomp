@@ -52,10 +52,13 @@ PROFILES = {
     'CUSA00038': {'name': 'RESOGUN', 'modules': ('libc.prx', 'libSceFios2.prx')},
     # Chocobo's Mystery Dungeon EVERY BUDDY! 01.00 (Unity 2018.2.14f1, IL2CPP). The eboot needs
     # PS4Util and Il2CppUserAssemblies (the game's C# compiled to native code) at load time; the
-    # plugins in Media/Plugins (CRIWARE, SaveData, NpToolkit, RSPlugin) are loaded later by Unity.
+    # plugins in Media/Plugins (CRIWARE, SaveData, NpToolkit, RSPlugin) are opened later by Unity with
+    # sceKernelLoadStartModule: they are linked too and found by name (dynlib.c, modules.txt).
     'CUSA14219': {'name': "Chocobo's Mystery Dungeon EVERY BUDDY!",
-                  'modules': ('libc.prx', 'libSceFios2.prx', 'Media/Modules/PS4Util.prx',
-                              'Media/Modules/Il2CppUserAssemblies.prx')},
+                  'modules': ('libc.prx', 'libSceFios2.prx', 'libSceNpToolkit2.prx',
+                              'Media/Modules/PS4Util.prx', 'Media/Modules/Il2CppUserAssemblies.prx',
+                              'Media/Plugins/cri_ware_unity.prx', 'Media/Plugins/SaveData.prx',
+                              'Media/Plugins/UnityNpToolkit2.prx', 'Media/Plugins/RSPlugin.prx')},
 }
 DEFAULT = {'name': None, 'modules': ('libc.prx', 'libSceFios2.prx')}
 

@@ -8,3 +8,7 @@
 
 /* modules: the game's sce_module files to link, in order (NULL-terminated). 0 on success. */
 int boot_prepare(const char *game_dir, const char *out_dir, const char *const *modules, char *err, size_t err_size);
+
+/* Exported functions and data of a PRX: fn(ctx, NID, module-relative address) per export. */
+#include <stdint.h>
+int boot_module_exports(const char *path, void (*fn)(void *ctx, const char *nid, uint64_t value), void *ctx);

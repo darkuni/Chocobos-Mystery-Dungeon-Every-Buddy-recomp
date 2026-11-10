@@ -676,6 +676,26 @@ static ABI int32_t direct_memory_type(uint64_t phys, int *type, void **start, vo
     read_unlock();
     return ACCESS;
 }
+/* sceKernelDirectMemoryQuery: the allocation holding offset (flags 0), or with flags 1 the first
+ * one at or after it. */
+typedef struct { int64_t start, end; int32_t memory_type; int32_t pad; } DirectQueryInfo;
+static ABI int32_t direct_query(int64_t offset, int flags, DirectQueryInfo *info, uint64_t size) {
+    if (!info || size<sizeof(DirectQueryInfo) || offset<0) return INVALID;
+    read_lock();
+    int best=-1;
+    for (int i=0;i<LIMIT;++i) {
+        if (!blocks[i].used) continue;
+        uint64_t s=blocks[i].start, e=s+blocks[i].size;
+        if ((uint64_t)offset>=s && (uint64_t)offset<e) { best=i; break; }
+        if ((flags&1) && s>(uint64_t)offset && (best<0 || s<blocks[best].start)) best=i;
+    }
+    if (best>=0) {
+        info->start=(int64_t)blocks[best].start; info->end=(int64_t)(blocks[best].start+blocks[best].size);
+        info->memory_type=blocks[best].type; info->pad=0;
+    }
+    read_unlock();
+    return best>=0 ? 0 : ACCESS;
+}
 static ABI int32_t batch_map2(BatchEntry *entries, int count, int *processed, int flags) {
     if (!entries || count<0) return INVALID;
     int32_t result=0; int done=0;
@@ -702,7 +722,7 @@ static ABI int32_t batch_map(BatchEntry *entries, int count, int *processed) {
 }
 static const RuntimeExport exports[]={
     {"mmap",posix_mmap}, {"msync",posix_msync},
-    {"sceKernelGetDirectMemorySize",direct_size}, {"sceKernelAllocateDirectMemory",direct_allocate},
+    {"sceKernelGetDirectMemorySize",direct_size}, {"sceKernelDirectMemoryQuery",direct_query}, {"sceKernelAllocateDirectMemory",direct_allocate},
     {"sceKernelAvailableDirectMemorySize",direct_available},
     {"sceKernelMapDirectMemory",direct_map}, {"sceKernelMapNamedDirectMemory",direct_map_named},
     {"sceKernelReleaseDirectMemory",direct_release}, {"sceKernelMunmap",direct_unmap}, {"munmap",direct_unmap},

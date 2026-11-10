@@ -30,9 +30,13 @@
 #define TITLE "Chocobo's Mystery Dungeon EVERY BUDDY!"
 /* Bump when the prepared files change format: the next start prepares again. */
 #define PREPARE_VERSION "chocobo-prepare-1"
-/* Unity: the eboot needs PS4Util and the IL2CPP game code (Media/Modules) at load time. */
-static const char *const MODULES[] = {"libc.prx", "libSceFios2.prx", "Media/Modules/PS4Util.prx",
-                                     "Media/Modules/Il2CppUserAssemblies.prx", NULL};
+/* Unity: the eboot needs PS4Util and the IL2CPP game code (Media/Modules) at load time; the
+ * plugins (Media/Plugins) are opened by the game with sceKernelLoadStartModule (dynlib.c), and
+ * UnityNpToolkit2 needs the system NpToolkit2. Same list as scripts/game_profiles.py. */
+static const char *const MODULES[] = {"libc.prx", "libSceFios2.prx", "libSceNpToolkit2.prx",
+                                     "Media/Modules/PS4Util.prx", "Media/Modules/Il2CppUserAssemblies.prx",
+                                     "Media/Plugins/cri_ware_unity.prx", "Media/Plugins/SaveData.prx",
+                                     "Media/Plugins/UnityNpToolkit2.prx", "Media/Plugins/RSPlugin.prx", NULL};
 
 static char exe_path[4096], base_dir[4096], game_dir[4096], out_dir[4096], user_dir[4096];
 
@@ -309,8 +313,8 @@ static int prepare(void) {
     char *have = (char *)boot_read_file(stamp_path, &have_size);
     int same = have && have_size == strlen(stamp) && !memcmp(have, stamp, have_size);
     free(have);
-    const char *files[] = {"boot-linked.bin", "functions.bin", "content.bin"};
-    for (size_t i = 0; same && i < 3; ++i) {
+    const char *files[] = {"boot-linked.bin", "modules.txt", "functions.bin", "content.bin"};
+    for (size_t i = 0; same && i < sizeof(files) / sizeof(*files); ++i) {
         boot_path(path, sizeof(path), "%s/%s", out_dir, files[i]);
         same = boot_is_file(path);
     }

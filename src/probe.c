@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include "runtime_online.h"
 #include "runtime.h"
+#include "dynlib.h"
 #include "bootstrap.h"
 #include "cpu_check.h"
 #include "isa_rewrite.h"
@@ -1425,7 +1426,7 @@ int main(int argc, char **argv) {
             LinkedModule *x=&modules[m];
             if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                 (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
-                                   x->tls_filesz>x->tls_memsz || x->tls_module<2 || x->tls_module>7)))
+                                   x->tls_filesz>x->tls_memsz || x->tls_module<2 || x->tls_module>16)))
                 fail("invalid linked module metadata");
         }
         if (nb>import_count) fail("invalid binding count");
@@ -1610,6 +1611,16 @@ int main(int argc, char **argv) {
         runtime_set_main_tls(image+main_tls[0],main_tls[1],main_tls[2],main_tls[3]);
         runtime_thread_attach_main();
         runtime_set_procparam(image+procparam);
+        /* Modules the game opens itself (Unity plugins) are linked too: sceKernelLoadStartModule
+         * and sceKernelDlsym find them through modules.txt beside the boot file (dynlib.c). */
+        {
+            uint64_t bases[16];
+            for (uint64_t m=0;m<module_count && m<16;++m) bases[m]=modules[m].base;
+            if (!dynlib_init(argv[1],app0,image,bases,(size_t)module_count)) {
+                runtime_dynlib_load_hook=dynlib_load;
+                runtime_dynlib_sym_hook=dynlib_sym;
+            }
+        }
         /* Dependencies start in link order (libc first), as the PS4 dynamic linker does. */
         for (uint64_t m=0;m<module_count;++m) {
             printf("Starting linked module %" PRIu64 " at image offset 0x%" PRIx64 "; native bindings=%" PRIu64 "\n",m,modules[m].init,nb);

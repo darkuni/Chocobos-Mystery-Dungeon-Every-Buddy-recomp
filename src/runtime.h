@@ -90,6 +90,7 @@ void runtime_mp3_close(Mp3Decoder *decoder);
 void runtime_mp3_reset(Mp3Decoder *decoder);
 int runtime_mp3_decode(Mp3Decoder *decoder, const unsigned char *data, int size, float *pcm, int max_samples, int *channels);
 uintptr_t runtime_videodec_resolve(const char *name);
+uintptr_t runtime_videodec2_resolve(const char *name);
 uintptr_t runtime_audio_resolve(const char *name);
 void runtime_audio_report(void);
 /* Custom soundtrack (runtime_music.c): replaces one buffer of the game's BGM port with the
@@ -118,6 +119,7 @@ int runtime_savedata_icon(int32_t user, const char *dir, char *out, size_t size)
 void runtime_thread_attach_host(const char *name);
 /* Offline contracts added for MediEvil and WipEout (runtime_extra.c). */
 uintptr_t runtime_extra_resolve(const char *name);
+uintptr_t runtime_unity_resolve(const char *name);
 void runtime_extra_report(void);
 /* libSceJson2 (runtime_json.c). */
 uintptr_t runtime_json_resolve(const char *name);
@@ -130,3 +132,7 @@ const char *runtime_thread_name(void *handle);
 uint64_t runtime_memory_flexible_available(void);
 unsigned char *runtime_image_base(void);
 #endif
+
+/* Set by the probe (dynlib.c): sceKernelLoadStartModule / sceKernelDlsym for linked modules. */
+extern int32_t (*runtime_dynlib_load_hook)(const char *path);
+extern uintptr_t (*runtime_dynlib_sym_hook)(int32_t handle, const char *name);
