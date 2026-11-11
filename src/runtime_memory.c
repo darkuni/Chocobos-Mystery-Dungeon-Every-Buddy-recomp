@@ -591,13 +591,32 @@ static ABI int32_t map_flexible_named(void **inout, uint64_t size, int prot, int
     (void)name; return map_flexible(inout,size,prot,flags);
 }
 static ABI int32_t release_flexible(void *address, uint64_t size) { return direct_unmap(address,size); }
-/* POSIX mmap as libc uses it: anonymous memory from the flexible pool. File mappings fail with
- * ENODEV (no guest file descriptor can be mapped). */
+static ABI int32_t kernel_mprotect(const void *address, uint64_t size, int prot);
+/* POSIX mmap: anonymous memory from the flexible pool. A file mapping (IL2CPP maps
+ * global-metadata.dat this way) is flexible memory filled from the file: reads see the file,
+ * writes stay in memory (no MAP_SHARED write-back). */
 static ABI void *posix_mmap(void *address, uint64_t size, int prot, int flags, int fd, int64_t offset) {
-    if (!(flags & 0x1000) || fd!=-1 || offset) { *runtime_errno()=19; return (void *)-1; }
+    int anonymous=(flags & 0x1000)!=0;
+    if ((anonymous && (fd!=-1 || offset)) || (!anonymous && (fd<0 || offset<0 || offset%PAGE)) || !size) {
+        *runtime_errno()=22; return (void *)-1;
+    }
+    uint64_t length=(size+PAGE-1)&~(PAGE-1);
     void *out=address;
-    int32_t r=map_flexible(&out,(size+PAGE-1)&~(PAGE-1),prot,flags & 0x10);
+    int32_t r=map_flexible(&out,length,anonymous ? prot : (prot|0x3),flags & 0x10);
     if (r) { *runtime_errno()=12; return (void *)-1; }
+    if (anonymous) return out;
+    uint64_t done=0;
+    while (done<size) {
+        int64_t n=runtime_file_pread(fd,(char *)out+done,size-done,offset+(int64_t)done);
+        if (n<0) { direct_unmap(out,length); *runtime_errno()=(int)(n<=-1 && n>=-4095 ? -n : 5); return (void *)-1; }
+        if (!n) break;
+        done+=(uint64_t)n;
+    }
+    memset((char *)out+done,0,length-done);
+    if ((prot|0x3)!=prot && kernel_mprotect(out,length,prot)) {
+        direct_unmap(out,length); *runtime_errno()=22; return (void *)-1;
+    }
+    printf("Runtime: mmap of fd %d: %" PRIu64 " bytes from offset %" PRId64 " at %p\n",fd,done,offset,out);
     return out;
 }
 static ABI int32_t posix_msync(void *address, uint64_t size, int flags) { (void)address; (void)size; (void)flags; return 0; }
