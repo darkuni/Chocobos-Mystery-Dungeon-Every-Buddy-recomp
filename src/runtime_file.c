@@ -19,14 +19,26 @@
 #include <windows.h>
 /* 64-bit sizes and times; directories are never opened as CRT descriptors. */
 typedef struct _stat64 HostStat;
-#define host_fstat(fd,s) _fstat64(fd,s)
+/* The CRT reports inode 0 for every file. IL2CPP's System.IO keys its file sharing table on
+ * device and inode, so all files looked like one file. The NTFS file index takes its place;
+ * convert_stat picks it up from the stat call just before it on the same thread. */
+static __thread uint32_t host_inode;
+static int host_fstat(int fd,HostStat *s) {
+    int r=_fstat64(fd,s);
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE h=(HANDLE)_get_osfhandle(fd);
+    host_inode=0;
+    if (!r && h!=INVALID_HANDLE_VALUE && GetFileInformationByHandle(h,&info))
+        host_inode=(info.nFileIndexLow^info.nFileIndexHigh^info.dwVolumeSerialNumber)|1u;
+    return r;
+}
 /* The UCRT's fast _stat64 (Windows 11 24H2+) describes a file symlink itself, size 0: with
    Developer Mode the update view links the psarcs that way, and the game found no files in
    them (#90, #44). An open descriptor follows the link; directories cannot be descriptors. */
 static int host_stat(const char *path,HostStat *s) {
     int fd=_open(path,_O_RDONLY|_O_BINARY);
-    if (fd<0) return _stat64(path,s);
-    int r=_fstat64(fd,s);
+    if (fd<0) { host_inode=0; return _stat64(path,s); }
+    int r=host_fstat(fd,s);
     _close(fd);
     return r;
 }
@@ -235,6 +247,7 @@ static void convert_stat(const HostStat *s,GuestStat *g) {
     g->nlink=(uint16_t)s->st_nlink;
     g->size=s->st_size;
 #ifdef _WIN32
+    if (host_inode) g->ino=host_inode;
     /* FreeBSD mode bits: directories rwxr-xr-x, files rw-r--r--. */
     g->mode=(uint16_t)(S_ISDIR(s->st_mode) ? 0040755 : 0100644);
     g->blocks=(s->st_size+511)/512; g->blksize=4096;
@@ -553,9 +566,31 @@ static int64_t do_access(const char *guest,int mode) {
 /* Convention adapters: sceKernel* -> Orbis error codes, POSIX -> -1 + errno. */
 static int64_t sce(int64_t r) { return r<0 ? ERR(runtime_guest_errno((int)-r)) : r; }
 static int64_t posix(int64_t r) { if (r<0) { *runtime_errno()=runtime_guest_errno((int)-r); return -1; } return r; }
+/* File trace: every libc (POSIX) file call (IL2CPP's System.IO uses these; the engine and Fios2
+ * use sceKernel*) and every failed sceKernel* call other than not-found, the first 400. */
+static void file_trace(const char *kind,const char *name,int64_t a,int64_t r) {
+    static int count;
+    if (!strcmp(kind,"sce") && (r>=0 || r==-ENOENT)) return;
+    if (!strcmp(name,"write") && (a==1 || a==2)) return;
+    int n=__atomic_add_fetch(&count,1,__ATOMIC_RELAXED);
+    if (n>400) return;
+    char what[600]="";
+    if (!strcmp(name,"open") || !strcmp(name,"stat") || !strcmp(name,"truncate") || !strcmp(name,"rename"))
+        snprintf(what,sizeof(what),"%.500s",a ? (const char *)(uintptr_t)a : "(null)");
+    else {
+        pthread_mutex_lock(&lock);
+        File *f=get((int)a);
+        snprintf(what,sizeof(what),"fd %lld%s%.500s",(long long)a,f ? " " : "",f ? f->path : "");
+        pthread_mutex_unlock(&lock);
+    }
+    if (r<0) printf("File: %s %s(%s) -> error %d (%s)\n",kind,name,what,(int)-r,strerror((int)-r));
+    else printf("File: %s %s(%s) -> %lld\n",kind,name,what,(long long)r);
+    if (n==400) printf("File: further calls not listed\n");
+}
+#define FIRST(a,...) ((int64_t)(uintptr_t)(a))
 #define PAIR(name,params,args) \
-    static ABI int64_t sce_##name params { return sce(do_##name args); } \
-    static ABI int64_t posix_##name params { return posix(do_##name args); }
+    static ABI int64_t sce_##name params { int64_t r=do_##name args; file_trace("sce",#name,FIRST args,r); return sce(r); } \
+    static ABI int64_t posix_##name params { int64_t r=do_##name args; file_trace("libc",#name,FIRST args,r); return posix(r); }
 PAIR(open,(const char *p,int f,int m),(p,f,m))
 PAIR(close,(int fd),(fd))
 PAIR(read,(int fd,void *b,uint64_t n),(fd,b,n))

@@ -158,3 +158,10 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   libc's __cxa_throw: every throw is listed as "Exception:" lines with the guest caller offset, and
   IL2CPP managed exceptions (Il2CppExceptionWrapper) with their class, message and inner
   exceptions (Unity 2018.2, .NET 4 layout: message at +0x18, inner at +0x28).
+- Third run: the exception is System.IO.IOException "Invalid handle to path
+  /app0/Media/StreamingAssets/ps4/55eb898769224bbc9e05208135130b70" (thrown twice). That is
+  Mono's message for ERROR_INVALID_HANDLE from a MonoIO icall (open or file type). The file exists.
+  The icall names are stripped from this eboot, so the next build lists every libc file call
+  (open/fstat/read/lseek/close with path or fd and result) as "File:" lines.
+- Fixed on the way: on Windows every file had inode 0 (the CRT does not fill it). IL2CPP keys its
+  file sharing table on device and inode; the NTFS file index now fills it.
