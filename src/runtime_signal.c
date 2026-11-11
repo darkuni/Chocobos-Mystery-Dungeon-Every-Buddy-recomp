@@ -52,6 +52,7 @@ _Static_assert(sizeof(Mcontext) == 0x480 && sizeof(Ucontext) == 0x500, "PS4 ucon
 typedef struct SigThread {
     void *guest;               /* the guest's pthread handle */
     volatile int32_t pending;  /* signal number waiting for delivery, 0 = none */
+    uint64_t raised_ms;        /* when the pending signal was raised */
 #ifdef _WIN32
     HANDLE host;
 #else
@@ -66,6 +67,12 @@ static _Thread_local SigThread *self;
 static void *volatile handlers[SIGNALS];
 static uintptr_t guest_lo, guest_hi;
 static volatile uint64_t raised, delivered;
+void (*runtime_signal_stuck_hook)(void);
+static uint64_t now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+}
 
 typedef void (ABI *GuestHandler)(int, void *);
 
@@ -204,19 +211,36 @@ static pthread_cond_t retry_wake = PTHREAD_COND_INITIALIZER;
 static int retry_started, retry_requests;
 static void *retry_thread(void *unused) {
     (void)unused;
+    int dumps = 0;
     for (;;) {
         pthread_mutex_lock(&retry_lock);
         while (!retry_requests) pthread_cond_wait(&retry_wake, &retry_lock);
         retry_requests = 0;
         pthread_mutex_unlock(&retry_lock);
-        for (int round = 0; round < 20000; ++round) {
-            int waiting = 0;
+        /* Until nothing is pending: 200 us apart for the first 0.4 s, then 1 ms. */
+        for (unsigned round = 0;; ++round) {
+            int waiting = 0, stuck = 0;
+            uint64_t now = now_ms();
             pthread_mutex_lock(&threads_lock);
-            for (SigThread *t = threads; t; t = t->next)
-                if (t->pending && !try_deliver(t)) waiting = 1;
+            for (SigThread *t = threads; t; t = t->next) {
+                if (!t->pending || try_deliver(t)) continue;
+                waiting = 1;
+                if (t->raised_ms && now - t->raised_ms >= 5000) {
+                    printf("Runtime: signal %d to guest thread %p not delivered for %llu ms\n", t->pending, t->guest,
+                           (unsigned long long)(now - t->raised_ms));
+                    t->raised_ms = 0; /* reported */
+                    stuck = 1;
+                }
+            }
             pthread_mutex_unlock(&threads_lock);
+            if (stuck && dumps < 3 && runtime_signal_stuck_hook) {
+                ++dumps;
+                printf("Runtime: thread stacks while a signal waits:\n");
+                fflush(stdout);
+                runtime_signal_stuck_hook();
+            }
             if (!waiting) break;
-            struct timespec pause = {0, 200000};
+            struct timespec pause = {0, round < 2000 ? 200000 : 1000000};
             nanosleep(&pause, NULL);
         }
     }
@@ -268,6 +292,7 @@ static ABI int32_t raise_exception(void *thread, int sig) {
     if (n <= 4 || !(n & (n - 1)))
         printf("Runtime: signal %d raised %llu times, delivered %llu\n", sig, (unsigned long long)n,
                (unsigned long long)delivered);
+    t->raised_ms = now_ms();
     __atomic_store_n(&t->pending, sig, __ATOMIC_RELEASE);
     if (t == self) { runtime_signal_poll(); return 0; }
     if (!try_deliver(t)) request_retry();

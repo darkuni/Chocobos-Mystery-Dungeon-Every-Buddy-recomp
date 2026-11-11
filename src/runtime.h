@@ -142,6 +142,8 @@ void runtime_signal_set_guest_range(const void *start, uint64_t size);
 void runtime_signal_attach(void *guest_thread);
 int runtime_signal_pending(void);
 int runtime_signal_poll(void);
+/* Set by the probe: prints every thread's stack when a signal stays undelivered. */
+extern void (*runtime_signal_stuck_hook)(void);
 uintptr_t runtime_signal_resolve(const char *name);
 
 /* Module records for the C++ unwinder and sceKernelGetModuleInfoFromAddr (runtime_modules.c). */

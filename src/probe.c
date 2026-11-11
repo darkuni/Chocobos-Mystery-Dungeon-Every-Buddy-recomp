@@ -763,6 +763,20 @@ static void dump_frames(ucontext_t *uc) {
     }
 }
 static void thread_dump(int sig, siginfo_t *info, void *context) { (void)sig; (void)info; dump_frames(context); }
+/* Every thread's frames (SIGUSR2 per thread), the game goes on. */
+static void dump_threads(void) {
+    int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
+    char buffer[4096];
+    long n;
+    while (dir>=0 && (n=syscall(SYS_getdents64,dir,buffer,sizeof(buffer)))>0)
+        for (long at=0; at<n;) {
+            struct { uint64_t ino; int64_t off; unsigned short reclen; unsigned char type; char name[]; } *d=(void *)(buffer+at);
+            pid_t tid=(pid_t)strtol(d->name,NULL,10);
+            if (tid>0 && tid!=gettid()) { syscall(SYS_tgkill,getpid(),tid,SIGUSR2); usleep(20000); }
+            at+=d->reclen;
+        }
+    if (dir>=0) close(dir);
+}
 static void watchdog(int sig, siginfo_t *info, void *context) {
     (void)info;
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
@@ -1619,6 +1633,7 @@ int main(int argc, char **argv) {
             for (uint64_t m=0;m<module_count && m<16;++m) { bases[m]=modules[m].base; inits[m]=modules[m].init; }
             if (!dynlib_init(argv[1],app0,image,bases,inits,(size_t)module_count)) {
                 runtime_dynlib_load_hook=dynlib_load;
+                runtime_signal_stuck_hook=dump_threads;
                 runtime_dynlib_sym_hook=dynlib_sym;
             }
         }
