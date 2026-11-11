@@ -20,6 +20,9 @@ namespace Libraries::Kernel {
 
 extern boost::asio::io_context io_context;
 extern void KernelSignalRequest();
+// Signal delivery from waits (src/runtime_signal.c); weak so the GPU library links alone too.
+extern "C" __attribute__((weak)) int runtime_signal_pending(void);
+extern "C" __attribute__((weak)) int runtime_signal_poll(void);
 
 static std::unordered_map<s32, EqueueInternal*> kqueues;
 static constexpr auto HrTimerSpinlockThresholdNs = 1200000u;
@@ -192,14 +195,25 @@ int EqueueInternal::WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKern
         return count > 0;
     };
 
-    if (micros == 0) {
-        // Wait indefinitely for events
-        std::unique_lock lock{m_mutex};
-        m_cond.wait(lock, predicate);
-    } else {
-        // Wait up until the timeout value
-        std::unique_lock lock{m_mutex};
-        m_cond.wait_for(lock, std::chrono::microseconds(micros), predicate);
+    // gow3: waits run in 2 ms slices so a signal raised on this thread (sceKernelRaiseException,
+    // Unity's garbage collector) is delivered from the wait with the queue unlocked
+    // (src/runtime_signal.c).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(micros);
+    std::unique_lock lock{m_mutex};
+    for (;;) {
+        auto slice = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+        const bool last = micros != 0 && deadline <= slice;
+        if (last) {
+            slice = deadline;
+        }
+        if (m_cond.wait_until(lock, slice, predicate) || last) {
+            break;
+        }
+        if (runtime_signal_pending && runtime_signal_pending()) {
+            lock.unlock();
+            runtime_signal_poll();
+            lock.lock();
+        }
     }
 
     return count;

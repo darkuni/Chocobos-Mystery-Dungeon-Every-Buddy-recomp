@@ -134,11 +134,21 @@ static ABI int32_t ef_wait(EventFlag *handle, uint64_t bits, uint32_t mode, uint
     ++f->waiters;
     while (!ef_match(f,bits,mode)) {
         if (f->generation!=generation) { r=f->deleted ? ERR(E_SRCH) : ERR(E_CANCELED); break; }
-        if (timeout_us) {
-            if (pthread_cond_timedwait(&f->cond,&f->lock,&deadline)==ETIMEDOUT && !ef_match(f,bits,mode)) {
-                r=ERR(E_TIMEDOUT); *timeout_us=0; break;
+        /* Slices of 2 ms: signals raised on this thread are delivered from the wait. */
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME,&until);
+        until.tv_nsec+=2000000;
+        if (until.tv_nsec>=1000000000) { until.tv_nsec-=1000000000; ++until.tv_sec; }
+        int last=timeout_us && (deadline.tv_sec<until.tv_sec || (deadline.tv_sec==until.tv_sec && deadline.tv_nsec<=until.tv_nsec));
+        if (last) until=deadline;
+        if (pthread_cond_timedwait(&f->cond,&f->lock,&until)==ETIMEDOUT && !ef_match(f,bits,mode)) {
+            if (last) { r=ERR(E_TIMEDOUT); *timeout_us=0; break; }
+            if (runtime_signal_pending()) {
+                pthread_mutex_unlock(&f->lock);
+                runtime_signal_poll();
+                pthread_mutex_lock(&f->lock);
             }
-        } else pthread_cond_wait(&f->cond,&f->lock);
+        }
     }
     --f->waiters;
     if (!r) ef_consume(f,bits,mode,result);

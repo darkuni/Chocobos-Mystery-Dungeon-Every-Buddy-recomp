@@ -83,14 +83,24 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
         while (*tail) tail=&(*tail)->next;
         *tail=&w; ++s->active;
         uint64_t deadline=timeout ? now_ns()+(uint64_t)*timeout*1000 : 0;
-        struct timespec end={.tv_sec=(time_t)(deadline/1000000000),.tv_nsec=(long)(deadline%1000000000)};
         while (!w.done) {
-            int e=timeout ? pthread_cond_timedwait(&w.event,&lock,&end) : pthread_cond_wait(&w.event,&lock);
-            if (e==ETIMEDOUT && !w.done) {
+            /* Slices of 2 ms: a signal raised on this thread is delivered from the wait, with
+             * the lock released (runtime_signal.c). */
+            uint64_t slice=now_ns()+2000000;
+            if (timeout && deadline<slice) slice=deadline;
+            struct timespec until={.tv_sec=(time_t)(slice/1000000000),.tv_nsec=(long)(slice%1000000000)};
+            int e=pthread_cond_timedwait(&w.event,&lock,&until);
+            if (w.done) break;
+            if (e && e!=ETIMEDOUT) host_check(e);
+            if (timeout && now_ns()>=deadline) {
                 Waiter **p=&s->first;
                 while (*p!=&w) p=&(*p)->next;
                 *p=w.next; w.result=ERR(60); w.done=1; ++timed_out;
-            } else if (e!=ETIMEDOUT) host_check(e);
+            } else if (runtime_signal_pending()) {
+                pthread_mutex_unlock(&lock);
+                runtime_signal_poll();
+                pthread_mutex_lock(&lock);
+            }
         }
         result=w.result;
         if (!result) ++acquired;

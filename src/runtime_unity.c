@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000) | (n)))
 
@@ -40,7 +41,21 @@ static ABI int32_t sem_wait_guest(void **sem) {
     if (!sem || !*sem) { set_errno(22); return -1; }
     Sem *s = *sem;
     pthread_mutex_lock(&s->lock);
-    while (!s->value) pthread_cond_wait(&s->cond, &s->lock);
+    while (!s->value) {
+        /* A signal raised on this thread runs here; the wait then fails with EINTR, as POSIX
+         * sem_wait does (runtime_signal.c). */
+        if (runtime_signal_pending()) {
+            pthread_mutex_unlock(&s->lock);
+            runtime_signal_poll();
+            set_errno(4);
+            return -1;
+        }
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 2000000;
+        if (until.tv_nsec >= 1000000000) { until.tv_nsec -= 1000000000; ++until.tv_sec; }
+        pthread_cond_timedwait(&s->cond, &s->lock, &until);
+    }
     --s->value;
     pthread_mutex_unlock(&s->lock);
     return 0;
@@ -75,19 +90,6 @@ static ABI int32_t inet_pton_guest(int af, const char *src, void *dst) {
 }
 static ABI int32_t chmod_guest(const char *path, uint32_t mode) { (void)path; (void)mode; return 0; }
 
-/* ---- libkernel_unity: hardware exception handlers (PS4Util's crash reporter) ---- */
-static void *exception_handlers[64];
-static ABI int32_t install_exception_handler(int signal, void *handler) {
-    if (signal < 0 || signal >= 64) return ERR(22);
-    exception_handlers[signal] = handler;
-    printf("Runtime: exception handler for signal %d noted (not hooked)\n", signal);
-    return 0;
-}
-static ABI int32_t raise_exception(void *thread, int signal) {
-    printf("Runtime: sceKernelRaiseException(%p, %d) not delivered\n", thread, signal);
-    return 0;
-}
-
 /* ---- Services with no PC counterpart ---- */
 static ABI int32_t not_supported(void) { return (int32_t)0x80020016; }            /* EINVAL */
 static ABI int32_t pad_invalid(void) { return (int32_t)0x80920001; }              /* SCE_PAD_ERROR_INVALID_ARG */
@@ -112,7 +114,6 @@ static const RuntimeExport exports[] = {
     {"sem_init", sem_init_guest}, {"sem_destroy", sem_destroy_guest}, {"sem_wait", sem_wait_guest},
     {"sem_post", sem_post_guest},
     {"sendmsg", no_network}, {"recvmsg", no_network}, {"inet_pton", inet_pton_guest}, {"chmod", chmod_guest},
-    {"sceKernelInstallExceptionHandler", install_exception_handler}, {"sceKernelRaiseException", raise_exception},
     {"sceKernelSetGPO", ok}, {"sceKernelSetVirtualRangeName", ok},
     /* System service toggles and reports */
     {"sceSystemServiceDisablePersonalEyeToEyeDistanceSetting", ok},

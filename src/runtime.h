@@ -136,3 +136,10 @@ unsigned char *runtime_image_base(void);
 /* Set by the probe (dynlib.c): sceKernelLoadStartModule / sceKernelDlsym for linked modules. */
 extern int32_t (*runtime_dynlib_load_hook)(const char *path, uint64_t argc, const void *argv, int32_t *result);
 extern uintptr_t (*runtime_dynlib_sym_hook)(int32_t handle, const char *name);
+
+/* Guest signals (runtime_signal.c): sceKernelRaiseException delivery. */
+void runtime_signal_set_guest_range(const void *start, uint64_t size);
+void runtime_signal_attach(void *guest_thread);
+int runtime_signal_pending(void);
+int runtime_signal_poll(void);
+uintptr_t runtime_signal_resolve(const char *name);

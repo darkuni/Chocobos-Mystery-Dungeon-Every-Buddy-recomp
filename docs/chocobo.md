@@ -113,8 +113,14 @@ All 922 imports left to the host runtime have an answer (static check). New in t
 
 ## Open questions for the first boot
 
-- `sceKernelRaiseException` is not delivered. If IL2CPP's GC uses it to stop threads, the
-  first collection will hang; the log line "sceKernelRaiseException ... not delivered" shows it.
+- Fourth test (2026-11-10): IL2CPP mapped global-metadata.dat, Unity started 24 workers, its
+  graphics device and render threads, then hung on a black screen right after
+  `sceKernelRaiseException(thread, 30)`: Boehm's stop-the-world raises SIGUSR1 (30) on every
+  thread and waits for each handler. src/runtime_signal.c now delivers it: threads in guest code
+  are interrupted (Windows: SuspendThread + hijack + RtlRestoreContext; Linux: a real-time host
+  signal), threads in runtime waits (semaphores, event flags, mutexes, condition variables,
+  sleeps, event queues, sem_wait) get it from 2 ms wait slices with locks released, and a
+  delivery thread retries threads that are briefly in other runtime code.
 - Plugins (Media/Plugins) start when Unity opens them, with its arguments: SaveData.prx's
   module_start reads a struct (size 0x10, version 0x200, pointer) from argv and faulted on the
   NULL it got when every module was started at boot (second test, 2026-11-10). libc, Fios2,

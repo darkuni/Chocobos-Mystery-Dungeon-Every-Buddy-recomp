@@ -104,6 +104,7 @@ static void attach(GuestThread *t) {
     t->tls_block=block; t->tcb=tcb;
     set_gs(tcb);
     current=t;
+    runtime_signal_attach(t);
 }
 static GuestThread *new_thread(void) {
     GuestThread *t=calloc(1,sizeof(*t));

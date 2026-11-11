@@ -113,7 +113,7 @@ uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
 uint64_t runtime_read_tsc(void) { return read_tsc(); }
-static int sleep_ns(uint64_t ns) {
+static int sleep_once(uint64_t ns) {
 #ifdef _WIN32
     compat_sleep_ns(ns);
 #else
@@ -121,6 +121,19 @@ static int sleep_ns(uint64_t ns) {
     while (nanosleep(&t,&t)) if (errno!=EINTR) return errno;
 #endif
     return 0;
+}
+/* Long sleeps in 2 ms pieces so signals raised on this thread are delivered (runtime_signal.c). */
+static int sleep_ns(uint64_t ns) {
+    runtime_signal_poll();
+    while (ns>2000000) {
+        int e=sleep_once(2000000);
+        if (e) return e;
+        ns-=2000000;
+        runtime_signal_poll();
+    }
+    int e=ns ? sleep_once(ns) : 0;
+    runtime_signal_poll();
+    return e;
 }
 static ABI int32_t kernel_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }
 static ABI int32_t posix_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }

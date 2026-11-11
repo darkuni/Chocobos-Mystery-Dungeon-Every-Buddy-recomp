@@ -86,10 +86,28 @@ static int32_t ensure_mutex(GuestMutex **mutex) {
     pthread_mutex_unlock(&static_init);
     return e;
 }
+/* Waits run in slices of SIGNAL_SLICE_NS so a signal raised on the waiting thread is
+ * delivered from the wait (runtime_signal.c). */
+#define SIGNAL_SLICE_NS 2000000
+static void slice_end(struct timespec *t) {
+    clock_gettime(CLOCK_REALTIME, t);
+    t->tv_nsec += SIGNAL_SLICE_NS;
+    if (t->tv_nsec >= 1000000000) { t->tv_nsec -= 1000000000; ++t->tv_sec; }
+}
+static int before(const struct timespec *a, const struct timespec *b) {
+    return a->tv_sec < b->tv_sec || (a->tv_sec == b->tv_sec && a->tv_nsec < b->tv_nsec);
+}
 static ABI int32_t mutex_lock(GuestMutex **mutex) {
     int32_t e = ensure_mutex(mutex);
     if (e) return e;
-    e = orbis_error(pthread_mutex_lock(&(*mutex)->native));
+    int r = pthread_mutex_trylock(&(*mutex)->native);
+    while (r == EBUSY || r == ETIMEDOUT) {
+        struct timespec until;
+        slice_end(&until);
+        r = pthread_mutex_timedlock(&(*mutex)->native, &until);
+        if (r == ETIMEDOUT) runtime_signal_poll();
+    }
+    e = orbis_error(r);
     if (!e) ++locks;
     return e;
 }
@@ -169,14 +187,40 @@ static ABI int32_t cond_wait(GuestCond **cond, GuestMutex **mutex) {
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3) return orbis_error(EINVAL);
     ++waits;
-    return orbis_error(pthread_cond_wait(&(*cond)->native, &(*mutex)->native));
+    for (;;) {
+        struct timespec until;
+        slice_end(&until);
+        int r = pthread_cond_timedwait(&(*cond)->native, &(*mutex)->native, &until);
+        if (r != ETIMEDOUT) return orbis_error(r);
+        if (runtime_signal_pending()) {
+            /* The handler runs without the mutex, as in a real signal during the wait; the
+             * wait then returns as a spurious wakeup. */
+            pthread_mutex_unlock(&(*mutex)->native);
+            runtime_signal_poll();
+            pthread_mutex_lock(&(*mutex)->native);
+            return 0;
+        }
+    }
 }
 static int32_t cond_wait_until(GuestCond **cond, GuestMutex **mutex, const struct timespec *end) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3 || !end) return orbis_error(EINVAL);
     ++waits;
-    return timed_error(pthread_cond_timedwait(&(*cond)->native, &(*mutex)->native, end));
+    for (;;) {
+        struct timespec until;
+        slice_end(&until);
+        if (!before(&until, end)) until = *end;
+        int r = pthread_cond_timedwait(&(*cond)->native, &(*mutex)->native, &until);
+        if (r != ETIMEDOUT) return timed_error(r);
+        if (!before(&until, end)) return timed_error(ETIMEDOUT);
+        if (runtime_signal_pending()) {
+            pthread_mutex_unlock(&(*mutex)->native);
+            runtime_signal_poll();
+            pthread_mutex_lock(&(*mutex)->native);
+            return 0;
+        }
+    }
 }
 static ABI int32_t cond_timedwait(GuestCond **cond, GuestMutex **mutex, uint32_t usec) {
     struct timespec end;
