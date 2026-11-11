@@ -276,6 +276,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (file) return file;
     uintptr_t extra = runtime_extra_resolve(name);
     if (extra) return extra;
+    uintptr_t modules = runtime_modules_resolve(name);
+    if (modules) return modules;
     uintptr_t signal = runtime_signal_resolve(name);
     if (signal) return signal;
     uintptr_t unity = runtime_unity_resolve(name);

@@ -335,6 +335,33 @@ int boot_module_exports(const char *path, void (*fn)(void *ctx, const char *nid,
     return 0;
 }
 
+/* Loaded segments and .eh_frame_hdr of a PRX or eboot, for the module records the C++ unwinder
+ * asks for (sceKernelGetModuleInfoForUnwind). 0 on success. */
+int boot_module_layout(const char *path, BootModuleLayout *out) {
+    Module m;
+    const char *file = strrchr(path, '/');
+    file = file ? file + 1 : path;
+    memset(out, 0, sizeof(*out));
+    if (load_module(path, file, &m, NULL, NULL)) { free_module(&m); return -1; }
+    for (int i = 0; i < m.self.phnum; ++i) {
+        const Ph *p = &m.self.ph[i];
+        if (p->type == PT_LOAD || p->type == 0x61000010u /* PT_SCE_RELRO */) {
+            if (out->segments < 4) {
+                out->seg_vaddr[out->segments] = p->vaddr;
+                out->seg_size[out->segments] = p->memsz;
+                out->seg_prot[out->segments] = p->flags;
+                ++out->segments;
+            }
+            if (p->vaddr + p->memsz > out->span) out->span = p->vaddr + p->memsz;
+        } else if (p->type == 0x6474e550u /* PT_GNU_EH_FRAME */) {
+            out->eh_hdr_vaddr = p->vaddr;
+            out->eh_hdr_size = p->memsz;
+        }
+    }
+    free_module(&m);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- prepare.py inspect_libc */
 static int libc_init_env_is_ret(const char *path, int *is_ret) {
     *is_ret = 0;

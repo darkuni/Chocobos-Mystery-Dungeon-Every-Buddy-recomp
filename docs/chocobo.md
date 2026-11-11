@@ -121,6 +121,14 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   signal), threads in runtime waits (semaphores, event flags, mutexes, condition variables,
   sleeps, event queues, sem_wait) get it from 2 ms wait slices with locks released, and a
   delivery thread retries threads that are briefly in other runtime code.
+- Fifth test (2026-11-10): the GC signals were delivered, the splash screen hid, the pad opened,
+  the first shader compiled and the Enlighten worker started; then libc's std::terminate
+  (sceKernelDebugRaiseException 0xa0020008) on the first C++ throw: IL2CPP throws a C++ exception
+  for every managed one, and sceKernelGetModuleInfoForUnwind answered "not found", so libunwind
+  found no frame data. runtime_modules.c now keeps records of the eboot and every linked module
+  (segments, .eh_frame_hdr, .eh_frame) for sceKernelGetModuleInfoForUnwind and
+  sceKernelGetModuleInfoFromAddr; checked offline: all ten modules' .eh_frame start with a "zR"
+  CIE.
 - Plugins (Media/Plugins) start when Unity opens them, with its arguments: SaveData.prx's
   module_start reads a struct (size 0x10, version 0x200, pointer) from argv and faulted on the
   NULL it got when every module was started at boot (second test, 2026-11-10). libc, Fios2,

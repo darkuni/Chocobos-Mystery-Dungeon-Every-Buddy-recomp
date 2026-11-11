@@ -616,7 +616,7 @@ static const RuntimeExport exports[]={
     {"sceKernelIsAddressSanitizerEnabled",ok_noop},
     {"sceKernelGetSanitizerMallocReplaceExternal",null_pointer},
     {"sceKernelGetSanitizerNewReplaceExternal",null_pointer},
-    {"sceKernelGetModuleInfoForUnwind",not_found}, {"sceKernelInternalMemoryGetModuleSegmentInfo",not_found},
+    {"sceKernelInternalMemoryGetModuleSegmentInfo",not_found},
     {"sceSysmoduleGetModuleInfoForUnwind",not_found}, {"sceLibcHeapGetTraceInfo",heap_trace_info}, {"Func_7C980FFB0AA27E7A",disc_map_query},
     /* WipEout: nobody connects through Remote Play. */
     {"sceRemoteplayInitialize",ok_noop}, {"sceRemoteplayTerminate",ok_noop},

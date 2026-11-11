@@ -143,3 +143,9 @@ void runtime_signal_attach(void *guest_thread);
 int runtime_signal_pending(void);
 int runtime_signal_poll(void);
 uintptr_t runtime_signal_resolve(const char *name);
+
+/* Module records for the C++ unwinder and sceKernelGetModuleInfoFromAddr (runtime_modules.c). */
+void runtime_module_register(const char *name, uintptr_t base, uint64_t span, uint64_t eh_hdr_vaddr,
+                             uint64_t eh_hdr_size, int segments, const uint64_t *seg_vaddr,
+                             const uint64_t *seg_size, const uint32_t *seg_prot);
+uintptr_t runtime_modules_resolve(const char *name);
