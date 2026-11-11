@@ -129,6 +129,12 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   (segments, .eh_frame_hdr, .eh_frame) for sceKernelGetModuleInfoForUnwind and
   sceKernelGetModuleInfoFromAddr; checked offline: all ten modules' .eh_frame start with a "zR"
   CIE.
+- Sixth/seventh tests (2026-11-11): the animated loading screen runs but loading never moves on
+  (12 files opened, no plugin opened, no audio port, no pad read). Watchdog stacks: the main
+  thread is in the frame loop (Unity's PS4 GfxDevice waits for the worker's Present, the worker
+  for the flip), the job and async-read workers idle on their semaphores; nothing blocked in I/O
+  or the GC. So the C# side waits for a condition it polls each frame. GOW3_IMPORT_STATS=1 counts
+  the runtime import calls (counting thunks) and prints the busiest each 10 s to find it.
 - Plugins (Media/Plugins) start when Unity opens them, with its arguments: SaveData.prx's
   module_start reads a struct (size 0x10, version 0x200, pointer) from argv and faulted on the
   NULL it got when every module was started at boot (second test, 2026-11-10). libc, Fios2,

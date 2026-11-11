@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include "runtime_online.h"
 #include "runtime.h"
 #include "dynlib.h"
@@ -1244,6 +1245,48 @@ static int cpu_supported(char *missing, size_t size) {
     return 1;
 }
 
+/* GOW3_IMPORT_STATS: the 15 busiest runtime imports of every 10-second window. */
+static unsigned char *stats_thunks;
+static uint64_t stats_count;
+static void *import_stats_thread(void *unused) {
+    (void)unused;
+    uint64_t *last = calloc(stats_count, sizeof(uint64_t));
+    if (!last) return NULL;
+    for (unsigned window = 1;; ++window) {
+#ifdef _WIN32
+        Sleep(10000);
+#else
+        sleep(10);
+#endif
+        uint64_t best[15] = {0}, delta[15] = {0}, total = 0;
+        for (uint64_t i = 0; i < stats_count; ++i) {
+            uint64_t now = __atomic_load_n((uint64_t *)(stats_thunks + 32 * i + 16), __ATOMIC_RELAXED);
+            uint64_t d = now - last[i];
+            last[i] = now;
+            total += d;
+            for (int k = 0; k < 15; ++k)
+                if (d > delta[k]) {
+                    memmove(delta + k + 1, delta + k, (14 - k) * sizeof(*delta));
+                    memmove(best + k + 1, best + k, (14 - k) * sizeof(*best));
+                    delta[k] = d; best[k] = i;
+                    break;
+                }
+        }
+        printf("Import stats, window %u (10 s): %" PRIu64 " runtime calls\n", window, total);
+        for (int k = 0; k < 15 && delta[k]; ++k) {
+            printf("  %10" PRIu64 "  %s (%s)\n", delta[k], runtime_import_name(names[best[k]]), names[best[k]]);
+        }
+        fflush(stdout);
+    }
+    return NULL;
+}
+static void import_stats_start(unsigned char *thunks, uint64_t count) {
+    stats_thunks = thunks; stats_count = count;
+    pthread_t id;
+    if (!pthread_create(&id, NULL, import_stats_thread, NULL)) pthread_detach(id);
+    printf("Import stats: on (GOW3_IMPORT_STATS), every 10 s\n");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
@@ -1533,6 +1576,19 @@ int main(int argc, char **argv) {
         t[8] = 0x48; t[9] = 0xb8; memcpy(t + 10, &handler, 8);
         t[18] = 0xff; t[19] = 0xe0;
     }
+    /* GOW3_IMPORT_STATS=1: every function import answered by the runtime goes through a counting
+     * thunk (lock inc [counter]; jmp [target]: no argument register changes), and import_stats
+     * prints the busiest ones every 10 s. Finds what a stalled game keeps polling. */
+    unsigned char *stat_thunks = NULL;
+    if (getenv("GOW3_IMPORT_STATS") && import_count) {
+#ifdef _WIN32
+        stat_thunks = VirtualAlloc(NULL, import_count * 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+#else
+        stat_thunks = mmap(NULL, import_count * 32, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (stat_thunks == MAP_FAILED) stat_thunks = NULL;
+#endif
+        if (stat_thunks) memset(stat_thunks, 0, import_count * 32);
+    }
     for (uint64_t i = 0; i < nr; ++i) {
         uintptr_t value = relocs[i].kind == 2 ? (uintptr_t)(data_traps + page_size * relocs[i].value + relocs[i].addend)
                         : relocs[i].kind == 1 ? (uintptr_t)(traps + 32 * relocs[i].value)
@@ -1540,6 +1596,14 @@ int main(int argc, char **argv) {
         if (relocs[i].kind) {
             uintptr_t resolved = runtime_resolve(names[relocs[i].value], relocs[i].kind == 2);
             if (resolved) value = resolved + relocs[i].addend;
+            if (resolved && stat_thunks && relocs[i].kind == 1 && !relocs[i].addend) {
+                unsigned char *t = stat_thunks + 32 * relocs[i].value;
+                static const unsigned char code[16] = {0xf0, 0x48, 0xff, 0x05, 8, 0, 0, 0,  /* lock inc qword [rip+8] */
+                                                       0xff, 0x25, 10, 0, 0, 0, 0xcc, 0xcc}; /* jmp [rip+10] */
+                memcpy(t, code, 16);
+                memcpy(t + 24, &resolved, 8);
+                value = (uintptr_t)t;
+            }
             else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
@@ -1548,6 +1612,7 @@ int main(int argc, char **argv) {
         }
         memcpy(image + relocs[i].target, &value, 8);
     }
+    if (stat_thunks) import_stats_start(stat_thunks, import_count);
     if (check_imports) {
         /* Lists every import the game would stop at, without running it (needs the GPU
          * library: without --cpu-only its symbols are registered above). */
