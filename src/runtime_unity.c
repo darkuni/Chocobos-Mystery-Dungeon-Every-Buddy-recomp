@@ -2,6 +2,7 @@
  * earlier port imported: POSIX semaphores and sockets, kernel extras, and the offline answers of
  * devices and services the PC has no counterpart for (PS VR, PS Move, social screen, PSN title
  * storage, Remote Play, live streaming). */
+#define _GNU_SOURCE
 #include "runtime.h"
 #include <errno.h>
 #include <pthread.h>

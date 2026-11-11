@@ -108,7 +108,7 @@ static void register_layout(const char *path, const char *name, uintptr_t base) 
 }
 int dynlib_init(const char *boot_path, const char *app0, unsigned char *image, const uint64_t *bases,
                 const uint64_t *inits, size_t count) {
-    char path[4600];
+    char path[8192];
     const char *slash = strrchr(boot_path, '/');
 #ifdef _WIN32
     const char *back = strrchr(boot_path, '\\');
@@ -134,10 +134,12 @@ int dynlib_init(const char *boot_path, const char *app0, unsigned char *image, c
     fclose(f);
     printf("Dynlib: %zu linked modules available to sceKernelLoadStartModule\n", nmods);
     /* Module records for the C++ unwinder (runtime_modules.c): the eboot and every module. */
-    snprintf(path, sizeof(path), "%s/eboot.bin", game_dir);
-    register_layout(path, "eboot.bin", (uintptr_t)image);
+    if (snprintf(path, sizeof(path), "%s/eboot.bin", game_dir) < (int)sizeof(path))
+        register_layout(path, "eboot.bin", (uintptr_t)image);
     for (size_t i = 0; i < nmods; ++i) {
-        snprintf(path, sizeof(path), "%s/%s%s", game_dir, strchr(mods[i].file, '/') ? "" : "sce_module/", mods[i].file);
+        if (snprintf(path, sizeof(path), "%s/%s%s", game_dir, strchr(mods[i].file, '/') ? "" : "sce_module/",
+                     mods[i].file) >= (int)sizeof(path))
+            continue;
         const char *name = strrchr(mods[i].file, '/');
         register_layout(path, name ? name + 1 : mods[i].file, mods[i].base);
     }
