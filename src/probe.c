@@ -1251,31 +1251,30 @@ static uint64_t stats_count;
 static void *import_stats_thread(void *unused) {
     (void)unused;
     uint64_t *last = calloc(stats_count, sizeof(uint64_t));
-    if (!last) return NULL;
+    uint64_t *order = calloc(stats_count, sizeof(uint64_t)), *delta = calloc(stats_count, sizeof(uint64_t));
+    if (!last || !order || !delta) return NULL;
     for (unsigned window = 1;; ++window) {
 #ifdef _WIN32
         Sleep(10000);
 #else
         sleep(10);
 #endif
-        uint64_t best[15] = {0}, delta[15] = {0}, total = 0;
+        uint64_t total = 0, n = 0;
         for (uint64_t i = 0; i < stats_count; ++i) {
             uint64_t now = __atomic_load_n((uint64_t *)(stats_thunks + 32 * i + 16), __ATOMIC_RELAXED);
-            uint64_t d = now - last[i];
+            delta[i] = now - last[i];
             last[i] = now;
-            total += d;
-            for (int k = 0; k < 15; ++k)
-                if (d > delta[k]) {
-                    memmove(delta + k + 1, delta + k, (14 - k) * sizeof(*delta));
-                    memmove(best + k + 1, best + k, (14 - k) * sizeof(*best));
-                    delta[k] = d; best[k] = i;
-                    break;
-                }
+            total += delta[i];
+            if (delta[i]) order[n++] = i;
         }
-        printf("Import stats, window %u (10 s): %" PRIu64 " runtime calls\n", window, total);
-        for (int k = 0; k < 15 && delta[k]; ++k) {
-            printf("  %10" PRIu64 "  %s (%s)\n", delta[k], runtime_import_name(names[best[k]]), names[best[k]]);
-        }
+        /* Every import called in the window, busiest first (insertion sort: a few hundred). */
+        for (uint64_t x = 1; x < n; ++x)
+            for (uint64_t y = x; y > 0 && delta[order[y]] > delta[order[y - 1]]; --y) {
+                uint64_t t = order[y]; order[y] = order[y - 1]; order[y - 1] = t;
+            }
+        printf("Import stats, window %u (10 s): %" PRIu64 " runtime calls to %" PRIu64 " imports\n", window, total, n);
+        for (uint64_t k = 0; k < n; ++k)
+            printf("  %10" PRIu64 "  %s\n", delta[order[k]], runtime_import_name(names[order[k]]));
         fflush(stdout);
     }
     return NULL;
