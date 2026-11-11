@@ -153,3 +153,8 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   the same tree is unpacked in app0. The runtime now mounts /archive/mount/point to app0.
 - Writes to descriptors 1 and 2 (Unity's own log) were lost on Windows, because after the log
   reopen a GUI program's stdout is not descriptor 1. They now go to last_run.log as "Guest:" lines.
+- Second run with the mount: same stall, and the game's stdout only shows Fios2 and launcher
+  banners (this release build strips Unity's log). The runtime now puts a thunk in front of
+  libc's __cxa_throw: every throw is listed as "Exception:" lines with the guest caller offset, and
+  IL2CPP managed exceptions (Il2CppExceptionWrapper) with their class, message and inner
+  exceptions (Unity 2018.2, .NET 4 layout: message at +0x18, inner at +0x28).

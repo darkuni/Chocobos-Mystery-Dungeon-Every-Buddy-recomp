@@ -82,6 +82,73 @@ static uint64_t read64(FILE *f) {
     for (int i = 7; i >= 0; --i) n = (n << 8) | b[i];
     return n;
 }
+/* Exception trace: every C++ throw in the game goes through libc's __cxa_throw. A thunk in front
+ * of it logs what is thrown (an IL2CPP managed exception: its class and message) and where from,
+ * then continues into the original. The game prints nothing itself in this build. */
+static int guest_pointer(uint64_t p) { return p>=0x800000000ull && p<0x8000000000ull && !(p&7); }
+static void guest_string(uint64_t s,char *out,size_t size) {
+    out[0]=0;
+    if (!guest_pointer(s) || !guest_pointer(*(uint64_t *)s)) return;
+    int32_t n=*(int32_t *)(s+16);
+    if (n<0 || n>4096) return;
+    const uint16_t *c=(const uint16_t *)(s+20);
+    size_t o=0;
+    for (int32_t i=0;i<n && o+1<size;++i) out[o++]=c[i]>=32 && c[i]<127 ? (char)c[i] : '?';
+    out[o]=0;
+}
+static void guest_cstring(uint64_t s,char *out,size_t size) {
+    out[0]=0;
+    if (s<0x800000000ull || s>=0x8000000000ull) return;
+    size_t o=0;
+    for (const char *c=(const char *)s;*c && o+1<size;++c) out[o++]=*c>=32 && *c<127 ? *c : '?';
+    out[o]=0;
+}
+static void describe_managed(uint64_t ex,int depth) {
+    char space[128],name[128],message[1024],message2[1024];
+    uint64_t klass=guest_pointer(ex) ? *(uint64_t *)ex : 0;
+    if (!guest_pointer(klass)) { printf("Exception: object %llx (no class)\n",(unsigned long long)ex); return; }
+    guest_cstring(*(uint64_t *)(klass+0x18),space,sizeof(space));
+    guest_cstring(*(uint64_t *)(klass+0x10),name,sizeof(name));
+    guest_string(*(uint64_t *)(ex+0x18),message,sizeof(message));
+    guest_string(*(uint64_t *)(ex+0x20),message2,sizeof(message2));
+    printf("Exception: %*s%s.%s: %s%s%s\n",depth*2,"",space,name,message,*message2 ? " | " : "",message2);
+    uint64_t inner=*(uint64_t *)(ex+0x28);
+    if (depth<3 && guest_pointer(inner) && guest_pointer(*(uint64_t *)inner)) describe_managed(inner,depth+1);
+}
+static ABI void trace_throw(uint64_t object,uint64_t type,uint64_t caller) {
+    static int count;
+    int n=__atomic_add_fetch(&count,1,__ATOMIC_RELAXED);
+    if (n>300) return;
+    char tname[160]="";
+    if (guest_pointer(type)) guest_cstring(*(uint64_t *)(type+8),tname,sizeof(tname));
+    printf("Exception: throw #%d from guest 0x%llx, type %s\n",n,
+           (unsigned long long)(caller-(uint64_t)(uintptr_t)image),tname);
+    if (strstr(tname,"Il2CppExceptionWrapper") && guest_pointer(object)) describe_managed(*(uint64_t *)object,0);
+    if (n==300) printf("Exception: further throws not listed\n");
+    fflush(stdout);
+}
+static uintptr_t throw_thunk(uintptr_t original) {
+#ifdef _WIN32
+    unsigned char *t=VirtualAlloc(NULL,64,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
+#else
+    unsigned char *t=mmap(NULL,64,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (t==MAP_FAILED) t=NULL;
+#endif
+    if (!t) return original;
+    uintptr_t logger=(uintptr_t)trace_throw;
+    /* push rdi; push rsi; push rdx; mov rdx,[rsp+24]; mov rax,logger; call rax;
+     * pop rdx; pop rsi; pop rdi; mov rax,original; jmp rax. Entry rsp is 8 mod 16, so after
+     * three pushes the call is aligned. */
+    static const unsigned char head[]={0x57,0x56,0x52,0x48,0x8b,0x54,0x24,0x18,0x48,0xb8};
+    static const unsigned char mid[]={0xff,0xd0,0x5a,0x5e,0x5f,0x48,0xb8};
+    size_t o=0;
+    memcpy(t+o,head,sizeof(head)); o+=sizeof(head);
+    memcpy(t+o,&logger,8); o+=8;
+    memcpy(t+o,mid,sizeof(mid)); o+=sizeof(mid);
+    memcpy(t+o,&original,8); o+=8;
+    t[o++]=0xff; t[o++]=0xe0;
+    return (uintptr_t)t;
+}
 static size_t round_page(size_t size) { return (size + page_size - 1) & ~(page_size - 1); }
 static void *allocate(size_t size) {
     void *low=runtime_low_map(size,PROT_READ|PROT_WRITE);
@@ -1607,6 +1674,11 @@ int main(int argc, char **argv) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
                 value=(uintptr_t)image+address+relocs[i].addend;
+                if (relocs[i].kind==1 && !relocs[i].addend && !strcmp(names[relocs[i].value],"vkuuLfhnSZI#libc")) {
+                    static uintptr_t original, thunk;
+                    if (original!=value) { original=value; thunk=throw_thunk(value); }
+                    value=thunk;
+                }
             }
         }
         memcpy(image + relocs[i].target, &value, 8);
