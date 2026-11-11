@@ -143,6 +143,9 @@ void runtime_file_configure(const char *app0,const char *user) {
     snprintf(user_root,sizeof(user_root),"%s",user);
     runtime_file_mount("/app0",app0);
     runtime_file_mount("/hostapp",app0);
+    /* Unity mounts archive.psarc here with Fios2 and reads Media/ from it. This dump keeps the
+     * same tree unpacked in app0, so the mount point shows app0. */
+    runtime_file_mount("/archive/mount/point",app0);
     load_file_patches();
     const char *writable[]={"temp0","download0","data"};
     mkdir(user,0755);
@@ -390,7 +393,26 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;
 }
+/* The game's standard output and error (Unity's log, printf) go to last_run.log through the
+ * host streams: on Windows a GUI program's stdout is not descriptor 1 after the reopen. Each line
+ * is prefixed "Guest: "; an unfinished line waits for the rest (up to 1 KiB). */
+static pthread_mutex_t console_lock=PTHREAD_MUTEX_INITIALIZER;
+static char console_line[1024];
+static size_t console_used;
+static void console_write(const char *text,uint64_t size) {
+    pthread_mutex_lock(&console_lock);
+    for (uint64_t i=0;i<size;++i) {
+        const char c=text[i];
+        if (c!='\n' && console_used<sizeof(console_line)-1) { if (c!='\r') console_line[console_used++]=c; continue; }
+        printf("Guest: %.*s\n",(int)console_used,console_line);
+        console_used=0;
+        if (c!='\n' && c!='\r') console_line[console_used++]=c;
+    }
+    fflush(stdout);
+    pthread_mutex_unlock(&console_lock);
+}
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
+    if (fd==1 || fd==2) { console_write(buffer,size); return (int64_t)size; }
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     ssize_t n=host_write(h,buffer,size);

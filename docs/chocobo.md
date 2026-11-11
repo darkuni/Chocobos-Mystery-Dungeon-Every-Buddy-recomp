@@ -140,3 +140,16 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   NULL it got when every module was started at boot (second test, 2026-11-10). libc, Fios2,
   NpToolkit2, PS4Util, the IL2CPP code and CRIWARE... started fine before it.
 - The CRIWARE audio path (Ajm / AudioOut / Audio3d) is the runtime's existing one.
+
+## Loading screen stall (import stats run)
+
+- Steady state after ~10 s: only per-frame calls (pad, video out, Gnm, service polling). No file
+  I/O and no plugin loads, so the C# loading flow stopped without blocking a thread.
+- The last file the game touched was StreamingAssets/ps4/4ae2dcfc8a54f7591c8ed359b4eb652 (a list
+  of asset bundle names), looked up under /archive/mount/point. Right after it the game mapped
+  mscorlib.dll-resources.dat, which is where exception message strings live: a managed exception
+  was thrown.
+- /archive/mount/point is where Unity mounts archive.psarc through Fios2. This dump has no psarc;
+  the same tree is unpacked in app0. The runtime now mounts /archive/mount/point to app0.
+- Writes to descriptors 1 and 2 (Unity's own log) were lost on Windows, because after the log
+  reopen a GUI program's stdout is not descriptor 1. They now go to last_run.log as "Guest:" lines.
