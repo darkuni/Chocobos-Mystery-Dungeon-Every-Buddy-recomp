@@ -186,3 +186,6 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   scePadDeviceClassGetExtendedInformation, and closes the pad when either fails, keeping the
   handle. The runtime answered the extended information with INVALID_ARG. It now reports a
   standard controller (class 0).
+- Settings menu key: Insert (keyboard) or R3 + L2 (controller), from the resogun-recomp runtime
+  (gpu/shim/gow3_overlay.cpp). Not F1 like the Wii/360 recomps; documented in README.md, the
+  package README and the release notes.

@@ -14,7 +14,7 @@ Chocobo's Mystery Dungeon EVERY BUDDY! (PS4) as a native program for Windows and
 3. Run it. The first start unpacks the PKGs into `game` and prepares the game once (under a minute). Every start after that goes straight into the game.
 
 - **Controls:** any controller. Keyboard: Space = Cross, Left Shift = Circle, E = Square, Enter = Options, I / J / K / L = d-pad.
-- **Settings:** in game, press Insert or R3 + L2.
+- **Settings menu:** in game, press **Insert** on the keyboard or **R3 + L2** on a controller (not F1 as in some other recomps).
 - **Steam Deck Gaming Mode:** add `chocobo` as a Non-Steam Game and set Compatibility to "Steam Linux Runtime" (not Proton).
 
 ## Reporting problems

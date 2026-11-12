@@ -17,8 +17,9 @@ FIRST START
      deleted or moved.
   Already have the game unpacked? A folder named "game" here (with eboot.bin in it) works too.
 
-SETTINGS
+SETTINGS MENU
   In the game: Insert on the keyboard, or R3 + L2 on a controller. Saved in chocobo.ini.
+  (Not F1 as in some other recomps: this one uses the Resogun recomp's runtime.)
 
 CONTROLS
   Any controller works. Keyboard: Space = Cross, Left Shift = Circle, E = Square,

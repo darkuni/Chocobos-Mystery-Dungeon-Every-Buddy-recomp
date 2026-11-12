@@ -7,9 +7,9 @@ IL2CPP) for Windows and Linux / SteamOS, built on the runtime of
 runtime replaces the PS4 system libraries, and the graphics are translated to Vulkan by the
 shadPS4 video core. There is no CPU emulator.
 
-> **Status: early work, first boot test pending.** The game, the IL2CPP code and the Unity plugins
-> (CRIWARE, SaveData, NpToolkit) link into one image; plugins are found by name at run time and
-> every PS4 function the game imports has an answer. Details: [docs/chocobo.md](docs/chocobo.md).
+> **Status: early test build (v0.1.0).** The game boots to the title screen and takes controller
+> and keyboard input; testing is finding out how far it plays from there. Details:
+> [docs/chocobo.md](docs/chocobo.md).
 
 No game files are included. You need your own copy for PS4 (CUSA14219) as a fake PKG.
 
@@ -30,6 +30,14 @@ Every push to `main` builds both packages (**Actions > Build Windows and Linux**
 
 Every start writes `user/last_run.log`; attach it to bug reports.
 
+## Settings menu and controls
+
+- **Settings menu: Insert** on the keyboard, or **R3 + L2** on a controller. (Not F1: this port
+  uses the resogun-recomp runtime, whose menu key is Insert.) Settings are saved in `chocobo.ini`.
+- **Controller:** any controller SDL recognizes (Xbox, PlayStation, Steam Controller, Steam Deck).
+- **Keyboard:** Space = Cross, Left Shift = Circle, E = Square, Enter = Options,
+  I / J / K / L = d-pad.
+
 Steam Deck Gaming Mode: add `chocobo` as a non-Steam game and choose **Steam Linux Runtime** (not
 Proton) under Properties > Compatibility.
 
@@ -38,6 +46,7 @@ Proton) under Properties > Compatibility.
 | Title ID | Region | Version | State |
 |---|---|---|---|
 | CUSA14219 | US | 01.00 | Development target |
+| CUSA14078 | JP | 01.01 update | Works on top of the US game: replaces the executables, keeps the US data. Needed when the US dump has blank executables |
 
 ## Building
 
