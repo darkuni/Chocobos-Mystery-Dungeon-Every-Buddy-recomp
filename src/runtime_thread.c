@@ -104,7 +104,8 @@ static void stack_bounds(GuestThread *t) {
     if (limits) limits(&low,&high);
     if (!high) {
         MEMORY_BASIC_INFORMATION m;
-        if (VirtualQuery(&m,&m,sizeof(m))) { low=(ULONG_PTR)m.AllocationBase; high=(ULONG_PTR)m.BaseAddress+m.RegionSize; }
+        int here=0;
+        if (VirtualQuery(&here,&m,sizeof(m))) { low=(ULONG_PTR)m.AllocationBase; high=(ULONG_PTR)m.BaseAddress+m.RegionSize; }
     }
     t->stack_low=low; t->stack_high=high;
 #else
