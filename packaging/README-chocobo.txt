@@ -1,13 +1,16 @@
 Chocobo's Mystery Dungeon EVERY BUDDY! for PC - native port of the PS4 game (Windows and Linux / SteamOS)
 
-EARLY WORK IN PROGRESS: the game is not playable yet.
+EARLY TEST BUILD: the game boots to the title screen and takes controller input. How far
+it plays past that is what testing is finding out.
 
 No game files are included. You need your own copy of the PS4 game (CUSA14219, US) as a fake PKG.
 
 FIRST START
   1. Put your PKG file in this folder, next to chocobo.exe (Linux: chocobo).
      Update PKGs go next to it too. The Japanese 1.01 update (CUSA14078) works with the US
-     game: it replaces the executables and keeps the US game otherwise.
+     game: it replaces the executables and keeps the US game otherwise. Some US dumps have
+     blank executables; the game then refuses to start and the log says so. Adding the
+     update fixes that.
   2. Run chocobo.exe (Linux: ./chocobo).
   3. The first start unpacks the PKG into the "game" folder here (about 1.5 GB, under a minute)
      and prepares the game once. After that it starts straight away, and the PKG can be
