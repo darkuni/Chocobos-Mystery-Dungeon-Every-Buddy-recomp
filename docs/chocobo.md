@@ -172,3 +172,12 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   objects referenced only from them. The runtime now records each thread's real stack (host
   thread stack; on Linux the main thread's own guest stack) and reports it. File trace lines
   now carry the thread name and guest caller offset.
+
+## Title screen, no input
+
+- With the GC fix the game reaches the title screen. No control works: the run ended with
+  "pad reads=0" although Unity calls scePadRead twice a frame, so every read was refused as an
+  unopened handle. Unity opens each user's pad twice with a close between (startup, then the
+  login event); the runtime handed out the same handle every time, so a close meant for the old
+  handle shut the new one. Each open now gets a fresh handle (user 1 odd, user 2 even), and pad
+  opens, closes and refused reads are logged.

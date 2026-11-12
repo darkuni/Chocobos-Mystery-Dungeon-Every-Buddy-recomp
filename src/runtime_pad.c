@@ -858,7 +858,13 @@ int runtime_pad_second_user(void) {
     return present;
 }
 
-static int valid(int32_t handle) { return handle==PAD_HANDLE ? opened : handle==PAD2_HANDLE ? opened2 : 0; }
+/* Each open gets a new handle, as on the PS4: a handle closed and reopened is not the old one
+ * again, so a late close of the old handle (Unity closes and reopens a user's pad when the
+ * login event arrives) leaves the new one open. opened/opened2 hold the live handle or 0.
+ * Handles stay small: user 1 odd, user 2 even. */
+static int32_t next_handle[2]={PAD_HANDLE,PAD2_HANDLE};
+static int user_of(int32_t handle) { return handle>0 && handle==opened ? 1 : handle>0 && handle==opened2 ? 2 : 0; }
+static int valid(int32_t handle) { return user_of(handle)!=0; }
 static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }
 volatile int runtime_pad_opened;
 static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const void *param) {
@@ -869,23 +875,33 @@ static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const voi
     if (index) return ERR_INVALID_ARG;
     int *flag=user==1 ? &opened : &opened2;
     pthread_mutex_lock(&lock);
-    int already=*flag; *flag=1;
+    if (*flag) { pthread_mutex_unlock(&lock); return ERR_ALREADY_OPENED; }
+    const int32_t handle=next_handle[user-1];
+    next_handle[user-1]+=2;
+    *flag=handle;
     pthread_mutex_unlock(&lock);
-    if (already) return ERR_ALREADY_OPENED;
     runtime_pad_opened=1;
-    puts(user==1 ? "Runtime: pad opened for user 1 (SDL gamepad or keyboard)"
-                 : "Runtime: pad opened for user 2 (second gamepad)");
-    return user==1 ? PAD_HANDLE : PAD2_HANDLE;
+    printf(user==1 ? "Runtime: pad opened for user 1 (SDL gamepad or keyboard), handle %d\n"
+                   : "Runtime: pad opened for user 2 (second gamepad), handle %d\n",handle);
+    return handle;
 }
 static ABI int32_t pad_close(int32_t handle) {
-    if (!valid(handle)) return ERR_INVALID_HANDLE;
-    *(handle==PAD_HANDLE ? &opened : &opened2)=0; return 0;
+    pthread_mutex_lock(&lock);
+    const int user=user_of(handle);
+    if (user) *(user==1 ? &opened : &opened2)=0;
+    pthread_mutex_unlock(&lock);
+    printf("Runtime: pad handle %d closed%s\n",handle,user ? "" : " (not open)");
+    return user ? 0 : ERR_INVALID_HANDLE;
 }
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
-    if (!valid(handle)) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) {
+        static int complaints;
+        if (complaints<8) { ++complaints; printf("Runtime: pad read with handle %d, which is not open\n",handle); }
+        return ERR_INVALID_HANDLE;
+    }
     if (!data) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
-    const int first=handle==PAD_HANDLE;
+    const int first=user_of(handle)==1;
     if (first) { sample(data); ++reads; }
     else sample_second(data);
     pthread_mutex_unlock(&lock);
@@ -894,10 +910,13 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
 }
 /* Buffered read: the port samples once per call, so one entry is returned. */
 static ABI int32_t pad_read(int32_t handle, PadData *data, int32_t count) {
-    if (!valid(handle)) return ERR_INVALID_HANDLE;
-    if (!data || count<1 || count>64) return ERR_INVALID_ARG;
-    pad_read_state(handle,data);
-    return 1;
+    if (!data || count<1 || count>64) {
+        static int complaints;
+        if (complaints<8) { ++complaints; printf("Runtime: scePadRead(handle %d, count %d) rejected\n",handle,count); }
+        return ERR_INVALID_ARG;
+    }
+    const int32_t r=pad_read_state(handle,data);
+    return r<0 ? r : 1;
 }
 static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
     if (!valid(handle)) return ERR_INVALID_HANDLE;
@@ -916,7 +935,7 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
     if (!valid(handle)) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
-    SDL_Gamepad *g=handle==PAD2_HANDLE ? second_gamepad() : current_gamepad();
+    SDL_Gamepad *g=user_of(handle)==2 ? second_gamepad() : current_gamepad();
     /* The menu's vibration strength scales the game's motors (0: off). */
     const unsigned percent=(unsigned)gow3gpu_vibration_percent();
     if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257u*percent/100u),(uint16_t)(param[1]*257u*percent/100u),1000);
@@ -928,7 +947,7 @@ static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag
 static ABI int32_t pad_reset_orientation(int32_t handle) {
     if (!valid(handle)) return ERR_INVALID_HANDLE;
     pthread_mutex_lock(&lock);
-    memcpy(motions[handle==PAD2_HANDLE].q,(const float[4]){0,0,0,1},sizeof(float[4]));
+    memcpy(motions[user_of(handle)==2].q,(const float[4]){0,0,0,1},sizeof(float[4]));
     pthread_mutex_unlock(&lock);
     return 0;
 }
