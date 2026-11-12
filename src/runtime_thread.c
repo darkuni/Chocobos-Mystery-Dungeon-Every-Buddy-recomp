@@ -35,6 +35,7 @@ typedef struct ThreadAttr {
     int detached, policy, prio, inherit;
     uint64_t stack, guard, affinity;
     struct ThreadAttr *next;
+    void *stack_address; /* scePthreadAttrGet: the thread's real stack (lowest address) */
 } ThreadAttr;
 typedef struct GuestThread {
     /* Guest-visible TCB is allocated separately; this is the ScePthread handle. */
@@ -46,6 +47,7 @@ typedef struct GuestThread {
     ThreadAttr attr;
     char name[32];
     int detached, finished, joined, host_owned;
+    uintptr_t stack_low, stack_high; /* the host stack this thread runs on */
 #ifdef _WIN32
     gow3_jmp_buf exit_jump; /* no SEH unwinding through guest frames */
 #else
@@ -89,7 +91,31 @@ static void set_gs(void *base) {
 #define tls_block_alloc(size) aligned_alloc(64,size)
 #endif
 /* Build TCB/static TLS for the calling host thread and point GS at it. */
+/* The calling thread's stack. The guest's garbage collector (Boehm, in IL2CPP games) asks for it
+ * with scePthreadAttrGet + GetStackaddr/GetStacksize and scans it for live objects: with no
+ * address it scanned nothing, freed objects still in use and ran their finalizers (a FileStream's
+ * handle closed under it). */
+static void stack_bounds(GuestThread *t) {
+#ifdef _WIN32
+    typedef VOID (WINAPI *Limits)(PULONG_PTR,PULONG_PTR);
+    static Limits limits;
+    if (!limits) limits=(Limits)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),"GetCurrentThreadStackLimits");
+    ULONG_PTR low=0,high=0;
+    if (limits) limits(&low,&high);
+    if (!high) {
+        MEMORY_BASIC_INFORMATION m;
+        if (VirtualQuery(&m,&m,sizeof(m))) { low=(ULONG_PTR)m.AllocationBase; high=(ULONG_PTR)m.BaseAddress+m.RegionSize; }
+    }
+    t->stack_low=low; t->stack_high=high;
+#else
+    pthread_attr_t a;
+    void *address=NULL; size_t size=0;
+    if (!pthread_getattr_np(pthread_self(),&a)) { pthread_attr_getstack(&a,&address,&size); pthread_attr_destroy(&a); }
+    t->stack_low=(uintptr_t)address; t->stack_high=(uintptr_t)address+size;
+#endif
+}
 static void attach(GuestThread *t) {
+    stack_bounds(t);
     uint64_t offset=tls_offset();
     size_t total=offset+256;
     unsigned char *block=tls_block_alloc((total+63)&~(size_t)63);
@@ -149,6 +175,11 @@ static void set_guest_fpu(void) {
     __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
     __asm__ volatile("fldcw %0" : : "m"(fpucw));
 }
+/* The guest main thread runs on its own stack, not the host thread's. */
+void runtime_thread_set_stack(void *low,size_t size) {
+    GuestThread *t=runtime_thread_current();
+    t->stack_low=(uintptr_t)low; t->stack_high=(uintptr_t)low+size;
+}
 void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
@@ -174,6 +205,7 @@ const char *runtime_thread_name(void *handle) {
     GuestThread *t=find_thread(handle);
     return t ? t->name : NULL;
 }
+const char *runtime_thread_current_name(void) { return current ? current->name : "host"; }
 static ABI void *thread_self(void) { return runtime_thread_current(); }
 static ABI int32_t *guest_error(void) { return &guest_errno; }
 int32_t *runtime_errno(void) { return &guest_errno; }
@@ -204,6 +236,7 @@ static ABI int32_t attr_get(void *thread,ThreadAttr **out) {
     ThreadAttr *next=a->next;
     *a=t->attr; a->magic=ATTR_MAGIC; a->next=next;
     a->detached=t->detached;
+    if (t->stack_high>t->stack_low) { a->stack_address=(void *)t->stack_low; a->stack=t->stack_high-t->stack_low; }
     return 0;
 }
 static ABI int32_t attr_set_stack(ThreadAttr **slot,uint64_t size) {
@@ -400,15 +433,16 @@ static ABI int32_t thread_get_schedparam(GuestThread *t,int *policy,SchedParam *
     if (!policy || !param) return ERR(22);
     *policy=t->attr.policy; param->priority=t->attr.prio; return 0;
 }
-/* Stacks are the host's: no guest-visible address, the size the game asked for. */
+/* Stacks are the host's: scePthreadAttrGet reports the thread's real one, a new attribute none. */
 static ABI int32_t attr_get_stack_full(ThreadAttr **slot,void **address,uint64_t *size) {
     ThreadAttr *a=find_attr(slot);
     if (!a || !address || !size) return ERR(22);
-    *address=NULL; *size=a->stack; return 0;
+    *address=a->stack_address; *size=a->stack; return 0;
 }
 static ABI int32_t attr_get_stack_address(ThreadAttr **slot,void **address) {
-    if (!find_attr(slot) || !address) return ERR(22);
-    *address=NULL; return 0;
+    ThreadAttr *a=find_attr(slot);
+    if (!a || !address) return ERR(22);
+    *address=a->stack_address; return 0;
 }
 static ABI int32_t posix_detach(GuestThread *t) { return posix(thread_detach(t)); }
 static ABI int32_t posix_equal(GuestThread *a,GuestThread *b) { return a==b; }

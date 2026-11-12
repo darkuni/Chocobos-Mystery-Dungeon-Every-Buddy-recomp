@@ -165,3 +165,10 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   (open/fstat/read/lseek/close with path or fd and result) as "File:" lines.
 - Fixed on the way: on Windows every file had inode 0 (the CRT does not fill it). IL2CPP keys its
   file sharing table on device and inode; the NTFS file index now fills it.
+- Fourth run (file trace): the game opens the bundle as fd 7, fstats it twice, then fd 7 is
+  closed and the next read gets EBADF -> "Invalid handle". The handle was closed under the
+  FileStream still using it: the garbage collector finalized it. Cause: scePthreadAttrGet +
+  GetStackaddr returned a NULL stack address, so Boehm GC never scanned thread stacks and freed
+  objects referenced only from them. The runtime now records each thread's real stack (host
+  thread stack; on Linux the main thread's own guest stack) and reports it. File trace lines
+  now carry the thread name and guest caller offset.

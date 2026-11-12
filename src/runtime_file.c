@@ -568,7 +568,7 @@ static int64_t sce(int64_t r) { return r<0 ? ERR(runtime_guest_errno((int)-r)) :
 static int64_t posix(int64_t r) { if (r<0) { *runtime_errno()=runtime_guest_errno((int)-r); return -1; } return r; }
 /* File trace: every libc (POSIX) file call (IL2CPP's System.IO uses these; the engine and Fios2
  * use sceKernel*) and every failed sceKernel* call other than not-found, the first 400. */
-static void file_trace(const char *kind,const char *name,int64_t a,int64_t r) {
+static void file_trace(const char *kind,const char *name,int64_t a,int64_t r,void *caller) {
     static int count;
     if (!strcmp(kind,"sce") && (r>=0 || r==-ENOENT)) return;
     if (!strcmp(name,"write") && (a==1 || a==2)) return;
@@ -583,14 +583,17 @@ static void file_trace(const char *kind,const char *name,int64_t a,int64_t r) {
         snprintf(what,sizeof(what),"fd %lld%s%.500s",(long long)a,f ? " " : "",f ? f->path : "");
         pthread_mutex_unlock(&lock);
     }
-    if (r<0) printf("File: %s %s(%s) -> error %d (%s)\n",kind,name,what,(int)-r,strerror((int)-r));
-    else printf("File: %s %s(%s) -> %lld\n",kind,name,what,(long long)r);
+    char who[96];
+    snprintf(who,sizeof(who),"[%s @0x%llx]",runtime_thread_current_name(),
+             (unsigned long long)((uintptr_t)caller-(uintptr_t)runtime_image_base()));
+    if (r<0) printf("File: %s %s(%s) -> error %d (%s) %s\n",kind,name,what,(int)-r,strerror((int)-r),who);
+    else printf("File: %s %s(%s) -> %lld %s\n",kind,name,what,(long long)r,who);
     if (n==400) printf("File: further calls not listed\n");
 }
 #define FIRST(a,...) ((int64_t)(uintptr_t)(a))
 #define PAIR(name,params,args) \
-    static ABI int64_t sce_##name params { int64_t r=do_##name args; file_trace("sce",#name,FIRST args,r); return sce(r); } \
-    static ABI int64_t posix_##name params { int64_t r=do_##name args; file_trace("libc",#name,FIRST args,r); return posix(r); }
+    static ABI int64_t sce_##name params { int64_t r=do_##name args; file_trace("sce",#name,FIRST args,r,__builtin_return_address(0)); return sce(r); } \
+    static ABI int64_t posix_##name params { int64_t r=do_##name args; file_trace("libc",#name,FIRST args,r,__builtin_return_address(0)); return posix(r); }
 PAIR(open,(const char *p,int f,int m),(p,f,m))
 PAIR(close,(int fd),(fd))
 PAIR(read,(int fd,void *b,uint64_t n),(fd,b,n))

@@ -131,6 +131,8 @@ const char *runtime_fiber_current_name(void);
 const char *runtime_thread_name(void *handle);
 uint64_t runtime_memory_flexible_available(void);
 unsigned char *runtime_image_base(void);
+void runtime_thread_set_stack(void *low, size_t size);
+const char *runtime_thread_current_name(void);
 #endif
 
 /* Set by the probe (dynlib.c): sceKernelLoadStartModule / sceKernelDlsym for linked modules. */
