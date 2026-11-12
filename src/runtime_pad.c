@@ -952,6 +952,15 @@ static ABI int32_t pad_reset_orientation(int32_t handle) {
     return 0;
 }
 
+/* scePadDeviceClassGetExtendedInformation: a standard controller (class 0, no class data).
+ * Unity opens a pad, asks for this and the controller information, and closes the pad again
+ * when either fails, while it keeps reading the closed handle: an error here meant no input. */
+static ABI int32_t pad_device_class(int32_t handle, uint8_t *info) {
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
+    if (!info) return ERR_INVALID_ARG;
+    memset(info,0,16); /* deviceClass STANDARD, reserved, classData */
+    return 0;
+}
 static ABI int32_t pad_light_bar(int32_t handle, const uint8_t *rgb) {
     if (!valid(handle)) return ERR_INVALID_HANDLE;
     (void)rgb; return 0;
@@ -961,7 +970,7 @@ static const RuntimeExport exports[]={
     {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
     {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
     {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
-    {"scePadResetOrientation",pad_reset_orientation},
+    {"scePadResetOrientation",pad_reset_orientation}, {"scePadDeviceClassGetExtendedInformation",pad_device_class},
     {"scePadSetAngularVelocityDeadbandState",pad_ok_handle_flag}, {"scePadSetTiltCorrectionState",pad_ok_handle_flag},
     {"scePadSetMotionSensorState",pad_ok_handle_flag},
 };

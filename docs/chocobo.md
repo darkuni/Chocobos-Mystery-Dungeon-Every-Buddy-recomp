@@ -181,3 +181,8 @@ All 922 imports left to the host runtime have an answer (static check). New in t
   login event); the runtime handed out the same handle every time, so a close meant for the old
   handle shut the new one. Each open now gets a fresh handle (user 1 odd, user 2 even), and pad
   opens, closes and refused reads are logged.
+- Second try: the log showed open 1, close 1, open 3, close 3, then reads of handles 1 and 3.
+  The eboot's pad setup (0xe9f6e0) opens the pad, calls scePadGetControllerInformation and
+  scePadDeviceClassGetExtendedInformation, and closes the pad when either fails, keeping the
+  handle. The runtime answered the extended information with INVALID_ARG. It now reports a
+  standard controller (class 0).

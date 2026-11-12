@@ -138,7 +138,7 @@ static const RuntimeExport exports[] = {
     /* PS Move: the library starts, no controller opens */
     {"sceMoveInit", ok}, {"sceMoveTerm", ok}, {"sceMoveOpen", move_no_device},
     {"sceMoveReadStateRecent", move_no_device}, {"sceMoveSetLightSphere", move_no_device},
-    {"scePadDeviceClassParseData", pad_invalid}, {"scePadDeviceClassGetExtendedInformation", pad_invalid},
+    {"scePadDeviceClassParseData", pad_invalid},
     {"sceCameraIsValidFrameData", camera_invalid},
     {"sceVideoOutConfigureOptionsInitialize_", ok}, {"sceAudioOutSetMixLevelPadSpk", ok},
     {"sceAudio3dAudioOutClose", ok}, {"sceAjmStrError", ajm_str_error},
